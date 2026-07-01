@@ -213,8 +213,20 @@ export class RunOrchestrator {
     if (!run) {
       throw new BeaverError('NOT_FOUND', { resource: 'run', id: runId });
     }
+    // Never run a delivery action while the agent may still be mutating the
+    // worktree. pr_ready is "active" (holds a worktree, not terminal) but the
+    // agent has finished, so it is the one active state that is allowed.
+    if (isActiveRunStatus(run.status) && run.status !== 'pr_ready') {
+      throw new BeaverError('RUN_BLOCKED', {
+        reason: `run ${runId} is still active (${run.status}); an action requires the agent to have finished`
+      });
+    }
     if (!run.baseCommit) {
       throw new BeaverError('RUN_BLOCKED', { reason: `run ${runId} has no prepared worktree` });
+    }
+    // Ship actions publish — gate them strictly to the completed handoff state.
+    if ((action === 'ship_fast_gate' || action === 'ship_push_snapshot') && run.status !== 'pr_ready') {
+      throw new BeaverError('RUN_BLOCKED', { reason: `${action} requires pr_ready (run is ${run.status})` });
     }
     const runDir = path.join(this.deps.runsDir, run.id);
 

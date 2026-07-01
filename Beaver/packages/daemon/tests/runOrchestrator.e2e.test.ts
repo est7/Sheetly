@@ -350,7 +350,38 @@ describe("RunOrchestrator publisher actions (B9)", () => {
   });
 
   test("refuses an action on a run with no prepared worktree", async () => {
-    repo.createRun(activeRun("run-nb", "task-9")); // no baseCommit
+    repo.createRun({ ...activeRun("run-nb", "task-9"), status: "aborted" }); // non-active, no baseCommit
     await expect(orch.runAction("run-nb", "prepare_handoff", config())).rejects.toThrow(/no prepared worktree/);
+  });
+
+  test("rejects any action while the agent is still active (worktree may be mutating)", async () => {
+    const cfg = config({ agentProfiles: { generic: { command: "bash", args: ["-lc", "sleep 300"] } } });
+    const started = orch.startRun("task-1", cfg, [task("task-1")]);
+    const r = await waitForStatus(started.id, ["implementing"]);
+    expect(r.baseCommit).toBeTruthy(); // worktree exists, but the agent is still running
+    const ship = config({ automation: { gitShipPushSnapshotScript: await shipScript("s.sh", 0) } });
+    await expect(orch.runAction(started.id, "ship_push_snapshot", ship)).rejects.toThrow(/still active/);
+    await orch.stopRun(started.id);
+    await waitForStatus(started.id, ["aborted"]);
+  });
+
+  test("gates ship actions to pr_ready (rejected on a blocked run with a worktree)", async () => {
+    const failing = config({ verifier: { command: "bash", args: ["-lc", "exit 1"], blockingExitCodes: [] } });
+    const started = orch.startRun("task-1", failing, [task("task-1")]);
+    const blocked = await waitForTerminal(started.id);
+    expect(blocked.status).toBe("blocked_tests");
+    expect(blocked.baseCommit).toBeTruthy();
+    const ship = config({ automation: { gitShipPushSnapshotScript: await shipScript("s2.sh", 0) } });
+    await expect(orch.runAction(started.id, "ship_push_snapshot", ship)).rejects.toThrow(/requires pr_ready/);
+    // A non-ship action (rebuild handoff) is still allowed on a blocked run.
+    expect((await orch.runAction(started.id, "prepare_handoff", config())).exitCode).toBe(0);
+  });
+
+  test("a missing/invalid ship script fails the action, never crashes the daemon", async () => {
+    const runId = await readyRunId();
+    const cfg = config({ automation: { gitShipPushSnapshotScript: "/no/such/beaver-script-xyz" } });
+    const res = await orch.runAction(runId, "ship_push_snapshot", cfg);
+    expect(res.exitCode).toBeNull(); // spawn failure surfaced, not an unhandled crash
+    expect(repo.readEventsSince(0, runId).map((e) => e.type)).toContain("tool.exited");
   });
 });

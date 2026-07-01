@@ -70,6 +70,18 @@ export class AgentRunner {
         errStream.end();
         resolve({ status: classify(code, signal, stopped, input.blockingExitCodes ?? []), exitCode: code, signal });
       });
+      // A spawn failure (ENOENT/EACCES — e.g. a stale configured script path)
+      // emits 'error' and never 'close'. Without this handler Node treats it as
+      // an unhandled error and kills the daemon; resolve it as a failed run.
+      child.on('error', (error) => {
+        for (const timer of timers) {
+          clearTimeout(timer);
+        }
+        errStream.write(`spawn failed: ${error.message}\n`);
+        outStream.end();
+        errStream.end();
+        resolve({ status: 'failed', exitCode: null, signal: null });
+      });
     });
 
     const stop = (): void => {
