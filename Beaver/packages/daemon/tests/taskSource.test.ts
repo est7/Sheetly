@@ -3,7 +3,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { BeaverConfigSchema, BeaverError, type BeaverConfig } from '@beaver/core';
-import { LocalJsonTaskSource, createTaskSource } from '../src/taskSource';
+import { LarkBaseTaskSource, LocalJsonTaskSource, createTaskSource } from '../src/taskSource';
 import { RunRepository } from '../src/repository/runRepository';
 
 let home: string;
@@ -84,16 +84,10 @@ describe('LocalJsonTaskSource poll mapping', () => {
 });
 
 describe('createTaskSource factory', () => {
-  test('builds localJson and refuses unsupported adapters explicitly', () => {
+  test('builds localJson and larkBase adapters', () => {
     expect(createTaskSource(config(), env)).toBeInstanceOf(LocalJsonTaskSource);
     const larkCfg = BeaverConfigSchema.parse({ taskSource: { type: 'larkBase' } });
-    try {
-      createTaskSource(larkCfg, env);
-      throw new Error('expected rejection');
-    } catch (error) {
-      expect(error).toBeInstanceOf(BeaverError);
-      expect((error as BeaverError).code).toBe('NOT_IMPLEMENTED');
-    }
+    expect(createTaskSource(larkCfg, env)).toBeInstanceOf(LarkBaseTaskSource);
   });
 });
 

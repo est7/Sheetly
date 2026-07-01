@@ -1,11 +1,12 @@
 import { BeaverError, type BeaverConfig, type TaskSource } from '@beaver/core';
 import { LocalJsonTaskSource } from './localJsonTaskSource';
+import { LarkBaseTaskSource } from './lark/larkBaseTaskSource';
 
 /**
- * Build the configured task source. Only the adapters the config schema can
- * actually produce (`localJson`, `larkBase`) are handled; `larkBase` fails
- * explicitly as NOT_IMPLEMENTED until B7 rather than faking upstream success.
- * The `never` default makes adding a new adapter variant a compile error.
+ * Build the configured task source. Each `TaskSourceType` maps to a sibling
+ * adapter that normalizes its upstream into source-neutral ExternalTasks; the
+ * `never` default makes adding a new adapter variant a compile error. Adding a
+ * source (Linear, …) is a new module + one case here — no downstream change.
  */
 export function createTaskSource(config: BeaverConfig, env: NodeJS.ProcessEnv = process.env): TaskSource {
   const source = config.taskSource;
@@ -13,7 +14,7 @@ export function createTaskSource(config: BeaverConfig, env: NodeJS.ProcessEnv = 
     case 'localJson':
       return new LocalJsonTaskSource({ path: source.path, defaultRepoPath: config.defaultRepoPath }, env);
     case 'larkBase':
-      throw new BeaverError('NOT_IMPLEMENTED', { feature: 'taskSource:larkBase' });
+      return new LarkBaseTaskSource(source);
     default: {
       const exhaustive: never = source;
       throw new BeaverError('NOT_IMPLEMENTED', {
