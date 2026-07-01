@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { resolveBeaverHome } from '@beaver/core';
 import { AgentRunner } from '../agentRunner';
+import { filterBlockedArgs, type BlockedArgMode } from './argFilter';
 import { PiTextSanitizer, parsePiEvent } from './piStream';
 import type {
   AgentBackend,
@@ -133,6 +134,15 @@ function ensureSessionFile(sessionPath: string): void {
   writeFileSync(sessionPath, '', { flag: 'a' });
 }
 
+/** Daemon-owned flags a profile's extraArgs must not override; --mode json is
+ * the event-stream protocol and --session is daemon-managed. */
+const PI_BLOCKED_ARGS: Record<string, BlockedArgMode> = {
+  '-p': 'standalone',
+  '--print': 'standalone',
+  '--mode': 'withValue',
+  '--session': 'withValue'
+};
+
 export function buildPiArgs(options: AgentBackendOptions, sessionPath: string): string[] {
   const args = ['-p', '--mode', 'json', '--session', sessionPath];
   if (options.model) {
@@ -148,7 +158,7 @@ export function buildPiArgs(options: AgentBackendOptions, sessionPath: string): 
     args.push('--append-system-prompt', options.systemPrompt);
   }
   if (options.extraArgs?.length) {
-    args.push(...options.extraArgs);
+    args.push(...filterBlockedArgs(options.extraArgs, PI_BLOCKED_ARGS));
   }
   // The prompt is positional and MUST be the final argument.
   args.push(options.promptText);

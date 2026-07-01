@@ -96,6 +96,22 @@ describe('buildClaudeArgs', () => {
     expect(args).toEqual(expect.arrayContaining(['--resume', 'sess-7']));
     expect(args).toContain('--foo');
   });
+
+  test('strips daemon-owned protocol flags from extraArgs (no last-wins override)', () => {
+    const args = buildClaudeArgs({
+      cwd: '/w',
+      promptText: 'x',
+      stdoutPath: '/o',
+      stderrPath: '/e',
+      extraArgs: ['--output-format', 'text', '-p', '--input-format=text', '--permission-mode', 'ask', '--keep']
+    });
+    // exactly one output-format flag survives, and it is stream-json
+    expect(args.filter((a) => a === '--output-format')).toHaveLength(1);
+    expect(args).not.toContain('text');
+    expect(args).not.toContain('ask');
+    expect(args).toContain('--keep');
+    expect(args.filter((a) => a === '-p')).toHaveLength(1);
+  });
 });
 
 describe('ClaudeBackend (fake CLI)', () => {
@@ -153,6 +169,20 @@ describe('ClaudeBackend (fake CLI)', () => {
     const result = await handle.result;
     expect(result.status).toBe('failed');
     expect(result.error).toBe('boom');
+  });
+
+  test('exit 0 without a result frame is a failure, not a fake success', async () => {
+    // Assistant text streamed but the terminal `result` frame never arrived.
+    const script = await fakeClaude([
+      JSON.stringify({ type: 'system', session_id: 's' }),
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'partial answer' }] }
+      })
+    ]);
+    const result = await new ClaudeBackend(script).run(opts(), () => {}).result;
+    expect(result.status).toBe('failed');
+    expect(result.error).toContain('result frame');
   });
 
   test('detect is false for a missing executable', async () => {

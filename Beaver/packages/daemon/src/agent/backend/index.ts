@@ -24,4 +24,5 @@ export {
 } from './codexProtocol';
 export { buildBackendRegistry, resolveNamedBackend } from './registry';
 export { createBackend, type BackendProfile } from './factory';
+export { filterBlockedArgs, type BlockedArgMode } from './argFilter';
 export { commandExists } from './which';

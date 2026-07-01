@@ -80,6 +80,20 @@ describe('buildPiArgs', () => {
     expect(splitPiModel('anthropic/claude-opus-4-8')).toEqual(['anthropic', 'claude-opus-4-8']);
     expect(splitPiModel('gpt-5')).toEqual(['', 'gpt-5']);
   });
+
+  test('strips daemon-owned --mode/--session overrides from extraArgs', () => {
+    const args = buildPiArgs(
+      { cwd: '/w', promptText: 'p', stdoutPath: '/o', stderrPath: '/e', extraArgs: ['--mode', 'text', '--session', 'evil', '--keep'] },
+      '/sess/real.jsonl'
+    );
+    expect(args.filter((a) => a === '--mode')).toHaveLength(1);
+    expect(args.filter((a) => a === '--session')).toHaveLength(1);
+    expect(args).toContain('/sess/real.jsonl');
+    expect(args).not.toContain('evil');
+    expect(args).toContain('--keep');
+    // prompt still trails last
+    expect(args[args.length - 1]).toBe('p');
+  });
 });
 
 describe('PiBackend (fake CLI)', () => {

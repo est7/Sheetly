@@ -1,4 +1,5 @@
 import { AgentRunner, type AgentRunHandle } from '../agentRunner';
+import { filterBlockedArgs, type BlockedArgMode } from './argFilter';
 import { CodexRpcClient } from './codexRpc';
 import { extractThreadId } from './codexProtocol';
 import type {
@@ -11,6 +12,11 @@ import type {
 import { commandExists } from './which';
 
 const DEFAULT_EXEC = 'codex';
+
+/** --listen is the daemon's JSON-RPC transport; a profile must not override it. */
+const CODEX_BLOCKED_ARGS: Record<string, BlockedArgMode> = {
+  '--listen': 'withValue'
+};
 
 type Deferred = { promise: Promise<void>; resolve: () => void };
 function deferred(): Deferred {
@@ -43,7 +49,7 @@ export class CodexBackend implements AgentBackend {
 
   run(options: AgentBackendOptions, onMessage: (message: AgentMessage) => void): AgentBackendHandle {
     const execPath = options.executablePath ?? this.execPath;
-    const args = ['app-server', '--listen', 'stdio://', ...(options.extraArgs ?? [])];
+    const args = ['app-server', '--listen', 'stdio://', ...filterBlockedArgs(options.extraArgs ?? [], CODEX_BLOCKED_ARGS)];
 
     let output = '';
     let finalError: string | undefined;

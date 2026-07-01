@@ -1,4 +1,5 @@
 import { AgentRunner, type AgentRunHandle } from '../agentRunner';
+import { filterBlockedArgs, type BlockedArgMode } from './argFilter';
 import { parseClaudeLine } from './claudeStreamJson';
 import type {
   AgentBackend,
@@ -37,6 +38,7 @@ export class ClaudeBackend implements AgentBackend {
     let finalText: string | undefined;
     let finalError: string | undefined;
     let sessionId: string | undefined = options.resumeSessionId;
+    let sawResult = false;
 
     let handle: AgentRunHandle;
     const onStdout = (line: string): void => {
@@ -60,6 +62,7 @@ export class ClaudeBackend implements AgentBackend {
         handle.writeStdin(outcome.controlResponse);
       }
       if (outcome.done) {
+        sawResult = true;
         handle.closeStdin();
       }
     };
@@ -93,6 +96,11 @@ export class ClaudeBackend implements AgentBackend {
       } else if (runResult.status === 'failed') {
         status = 'failed';
         error = error ?? `claude exited with code ${runResult.exitCode ?? 'null'}`;
+      } else if (!sawResult) {
+        // Exit 0 but the terminal stream-json `result` frame never arrived —
+        // the run was truncated / died early. That is not a verified success.
+        status = 'failed';
+        error = 'claude exited without a stream-json result frame';
       } else {
         status = 'completed';
       }
@@ -102,6 +110,15 @@ export class ClaudeBackend implements AgentBackend {
     return { pid: handle.pid, result, stop: handle.stop };
   }
 }
+
+/** Daemon-owned flags a profile's extraArgs must not override, or the
+ * stream-json protocol / parser breaks (last-wins CLI). */
+const CLAUDE_BLOCKED_ARGS: Record<string, BlockedArgMode> = {
+  '-p': 'standalone',
+  '--output-format': 'withValue',
+  '--input-format': 'withValue',
+  '--permission-mode': 'withValue'
+};
 
 /** Protocol-critical flags Beaver owns; a stream-json child must not lose them. */
 export function buildClaudeArgs(options: AgentBackendOptions): string[] {
@@ -131,7 +148,7 @@ export function buildClaudeArgs(options: AgentBackendOptions): string[] {
     args.push('--resume', options.resumeSessionId);
   }
   if (options.extraArgs?.length) {
-    args.push(...options.extraArgs);
+    args.push(...filterBlockedArgs(options.extraArgs, CLAUDE_BLOCKED_ARGS));
   }
   return args;
 }
