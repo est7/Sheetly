@@ -147,6 +147,22 @@ describe('RunRepository attempts (D7 append-only)', () => {
   test('rejects an attempt for a missing run (foreign key)', () => {
     expect(() => repo.appendAttempt({ runId: 'ghost', phase: 'implementing' })).toThrow();
   });
+
+  test('pins the agent session id early and preserves it across finalize (B8)', () => {
+    const run = makeRun();
+    repo.createRun(run);
+    const attempt = repo.appendAttempt({ runId: run.id, phase: 'implementing' });
+    expect(attempt.sessionId).toBeUndefined();
+
+    // Early pin (as the backend emits it) survives a finalize that omits one.
+    repo.setAttemptSession(attempt.id, 'sess-abc');
+    const finalized = repo.finalizeAttempt(attempt.id, { exitCode: 0 });
+    expect(finalized.sessionId).toBe('sess-abc');
+
+    // A finalize that carries a session id pins it directly.
+    const a2 = repo.appendAttempt({ runId: run.id, phase: 'verifying' });
+    expect(repo.finalizeAttempt(a2.id, { exitCode: 0, sessionId: 'sess-xyz' }).sessionId).toBe('sess-xyz');
+  });
 });
 
 describe('RunRepository tasks + artifacts', () => {

@@ -129,6 +129,9 @@ export type Attempt = {
   diffPatchPath?: string;
   verifierOutputPath?: string;
   exitCode?: number;
+  /** Agent session id for resume/fix-loop continuity (D-B8); pinned as soon as
+   * the backend emits it so a crash mid-run keeps resume provenance. */
+  sessionId?: string;
   startedAt: string;
   finishedAt?: string;
 };

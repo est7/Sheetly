@@ -212,6 +212,7 @@ export class RunOrchestrator {
       });
       const promptText = await readFile(promptPath, 'utf8');
       const backend = createBackend(profile, this.deps.agentRunner);
+      let sessionPinned = false;
       const handle = backend.run(
         {
           cwd: run.worktreePath,
@@ -225,7 +226,15 @@ export class RunOrchestrator {
           extraArgs: profile.provider ? profile.args : undefined,
           variables
         },
-        (message) => this.emitAgentMessage(run.id, message)
+        (message) => {
+          // Pin the session id the instant the backend emits it (claude/codex
+          // status frames), so a crash mid-run keeps resume provenance.
+          if (!sessionPinned && message.sessionId) {
+            sessionPinned = true;
+            this.deps.repo.setAttemptSession(attempt.id, message.sessionId);
+          }
+          this.emitAgentMessage(run.id, message);
+        }
       );
       this.agentHandles.set(run.id, handle);
       this.deps.repo.patchRun(run.id, { currentPid: handle.pid });
@@ -236,7 +245,7 @@ export class RunOrchestrator {
       }
       const agentResult = await handle.result;
       this.agentHandles.delete(run.id);
-      this.deps.repo.finalizeAttempt(attempt.id, { exitCode: agentResult.exitCode ?? -1 });
+      this.deps.repo.finalizeAttempt(attempt.id, { exitCode: agentResult.exitCode ?? -1, sessionId: agentResult.sessionId });
       this.deps.repo.patchRun(run.id, { currentPid: undefined });
       await this.deps.eventLog.append(run.id, 'agent.exited', {
         status: agentResult.status,

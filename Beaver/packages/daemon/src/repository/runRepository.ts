@@ -189,7 +189,7 @@ export class RunRepository {
     return this.getAttempt(id)!;
   }
 
-  finalizeAttempt(id: string, result: { exitCode: number }): Attempt {
+  finalizeAttempt(id: string, result: { exitCode: number; sessionId?: string }): Attempt {
     const existing = this.getAttempt(id);
     if (!existing) {
       throw new BeaverError('NOT_FOUND', { resource: 'attempt', id });
@@ -197,8 +197,17 @@ export class RunRepository {
     if (existing.finishedAt) {
       throw new BeaverError('BAD_REQUEST', { detail: `attempt ${id} already finalized` });
     }
-    this.db.query('UPDATE attempts SET exit_code = ?, finished_at = ? WHERE id = ?').run(result.exitCode, isoNow(), id);
+    // COALESCE keeps an already-pinned session id if the final result omits one.
+    this.db
+      .query('UPDATE attempts SET exit_code = ?, session_id = COALESCE(?, session_id), finished_at = ? WHERE id = ?')
+      .run(result.exitCode, result.sessionId ?? null, isoNow(), id);
     return this.getAttempt(id)!;
+  }
+
+  /** Pin the agent session id as soon as the backend emits it, so a crash
+   * mid-run keeps resume provenance. Idempotent; last non-null write wins. */
+  setAttemptSession(id: string, sessionId: string): void {
+    this.db.query('UPDATE attempts SET session_id = ? WHERE id = ?').run(sessionId, id);
   }
 
   getAttempt(id: string): Attempt | null {
@@ -353,6 +362,7 @@ function attemptFromRow(row: Row): Attempt {
     diffPatchPath: optStr(row.diff_patch_path),
     verifierOutputPath: optStr(row.verifier_output_path),
     exitCode: optNum(row.exit_code),
+    sessionId: optStr(row.session_id),
     startedAt: str(row.started_at),
     finishedAt: optStr(row.finished_at)
   };

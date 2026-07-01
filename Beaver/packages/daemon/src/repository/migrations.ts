@@ -6,7 +6,7 @@ import type { Database } from 'bun:sqlite';
  * shipped one, never write a down migration. A DB stamped newer than we know is
  * refused, not downgraded.
  */
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 type Migration = { version: number; up: string };
 
@@ -100,6 +100,12 @@ const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_attempts_run_number ON attempts(run_id, attempt_number);
       CREATE INDEX idx_artifacts_run ON artifacts(run_id);
     `
+  },
+  {
+    // B8 resume/fix-loop: persist the agent session id so a re-run continues the
+    // same conversation (claude --resume / codex thread/resume / pi --session).
+    version: 2,
+    up: `ALTER TABLE attempts ADD COLUMN session_id TEXT;`
   }
 ];
 
