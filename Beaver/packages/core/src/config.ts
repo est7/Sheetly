@@ -89,6 +89,10 @@ export const BeaverConfigSchema = z
     defaultRepoPath: z.string().default(''),
     gitBinary: z.string().min(1).default('git'),
     maxConcurrentRuns: z.number().int().positive().default(2),
+    /** B8 fix loop: after a verifier failure, auto re-run the agent with the
+     * failure output (same session) up to this many times before blocking.
+     * 0 = off (a failing verifier blocks immediately). */
+    maxFixAttempts: z.number().int().min(0).default(0),
     defaultAgentProfile: z.string().min(1).default('generic'),
     agentProfiles: z.record(AgentProfileSchema).default({}),
     verifier: VerifierConfigSchema.optional(),

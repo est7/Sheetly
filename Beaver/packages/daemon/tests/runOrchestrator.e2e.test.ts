@@ -264,3 +264,32 @@ describe('RunOrchestrator resume (B8)', () => {
     expect(() => orch.resumeRun('run-x', config(), [task('task-1')])).toThrow(/no prepared worktree/);
   });
 });
+
+describe('RunOrchestrator fix loop (B8)', () => {
+  test('re-runs the agent on a verifier failure and reaches pr_ready once it passes', async () => {
+    // Verifier fails the first time (creates a marker), passes the second.
+    const cfg = config({
+      maxFixAttempts: 1,
+      verifier: { command: 'bash', args: ['-lc', 'test -f .beaver-fixed && exit 0 || { touch .beaver-fixed; exit 1; }'], blockingExitCodes: [] }
+    });
+    const started = orch.startRun('task-1', cfg, [task('task-1')]);
+    const run = await waitForTerminal(started.id);
+    expect(run.status).toBe('pr_ready');
+
+    // Initial attempt + one fix attempt; a fix notice was recorded.
+    const implementing = repo.listAttempts(started.id).filter((a) => a.phase === 'implementing');
+    expect(implementing).toHaveLength(2);
+    const errors = repo.readEventsSince(0, started.id).filter((e) => e.type === 'run.error');
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0]?.payload.message)).toContain('auto-fixing');
+  });
+
+  test('blocks after exhausting maxFixAttempts (no fake success)', async () => {
+    const cfg = config({ maxFixAttempts: 1, verifier: { command: 'bash', args: ['-lc', 'exit 1'], blockingExitCodes: [] } });
+    const started = orch.startRun('task-1', cfg, [task('task-1')]);
+    const run = await waitForTerminal(started.id);
+    expect(run.status).toBe('blocked_tests');
+    // initial + exactly one fix attempt, then block
+    expect(repo.listAttempts(started.id).filter((a) => a.phase === 'implementing')).toHaveLength(2);
+  });
+});

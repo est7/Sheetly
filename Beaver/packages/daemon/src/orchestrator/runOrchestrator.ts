@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import {
   BeaverError,
   isActiveRunStatus,
@@ -279,84 +279,96 @@ export class RunOrchestrator {
       branchName: run.branchName
     };
 
-    await this.transition(run.id, 'implementing');
-    const attempt = this.deps.repo.appendAttempt({
-      runId: run.id,
-      phase: 'implementing',
-      agentProfile: profile.name,
-      command: profile.command,
-      args: profile.args,
-      promptPath: opts.promptPath,
-      stdoutPath,
-      stderrPath
-    });
-    await this.deps.eventLog.append(run.id, 'agent.started', {
-      command: profile.command,
-      provider: profile.provider ?? null,
-      resumed: opts.resumed ?? false
-    });
-    const promptText = await readFile(opts.promptPath, 'utf8');
-    const backend = createBackend(profile, this.deps.agentRunner);
-    let sessionPinned = false;
-    const handle = backend.run(
-      {
-        cwd: run.worktreePath,
-        promptText,
-        promptPath: opts.promptPath,
+    const packDir = path.dirname(opts.promptPath);
+    let promptPath = opts.promptPath;
+    let resumeSessionId = opts.resumeSessionId;
+    let resumed = opts.resumed ?? false;
+    let fixesLeft = config.maxFixAttempts;
+
+    // implement → verify, looping while the verifier fails and fix attempts
+    // remain (B8 fix loop). Each fix cycle re-runs the agent in the same session
+    // with the verifier output, going verifying → blocked_tests → implementing.
+    for (let cycle = 0; ; cycle += 1) {
+      await this.transition(run.id, 'implementing');
+      const attempt = this.deps.repo.appendAttempt({
+        runId: run.id,
+        phase: 'implementing',
+        agentProfile: profile.name,
+        command: profile.command,
+        args: profile.args,
+        promptPath,
         stdoutPath,
-        stderrPath,
-        blockingExitCodes: profile.blockingExitCodes,
-        // For a provider, profile args are extra CLI flags; the generic
-        // backend already owns them via its constructor.
-        extraArgs: profile.provider ? profile.args : undefined,
-        resumeSessionId: opts.resumeSessionId,
-        variables
-      },
-      (message) => {
-        // Pin the session id the instant the backend emits it (claude/codex
-        // status frames), so a crash mid-run keeps resume provenance.
-        if (!sessionPinned && message.sessionId) {
-          sessionPinned = true;
-          this.deps.repo.setAttemptSession(attempt.id, message.sessionId);
+        stderrPath
+      });
+      await this.deps.eventLog.append(run.id, 'agent.started', {
+        command: profile.command,
+        provider: profile.provider ?? null,
+        resumed
+      });
+      const promptText = await readFile(promptPath, 'utf8');
+      const backend = createBackend(profile, this.deps.agentRunner);
+      let sessionPinned = false;
+      const handle = backend.run(
+        {
+          cwd: run.worktreePath,
+          promptText,
+          promptPath,
+          stdoutPath,
+          stderrPath,
+          blockingExitCodes: profile.blockingExitCodes,
+          // For a provider, profile args are extra CLI flags; the generic
+          // backend already owns them via its constructor.
+          extraArgs: profile.provider ? profile.args : undefined,
+          resumeSessionId,
+          variables
+        },
+        (message) => {
+          // Pin the session id the instant the backend emits it (claude/codex
+          // status frames), so a crash mid-run keeps resume provenance.
+          if (!sessionPinned && message.sessionId) {
+            sessionPinned = true;
+            this.deps.repo.setAttemptSession(attempt.id, message.sessionId);
+          }
+          this.emitAgentMessage(run.id, message);
         }
-        this.emitAgentMessage(run.id, message);
-      }
-    );
-    this.agentHandles.set(run.id, handle);
-    this.deps.repo.patchRun(run.id, { currentPid: handle.pid });
-    // A stop that raced the spawn (canceled set while no handle existed) is
-    // honored here rather than letting the agent run to completion.
-    if (this.canceled.has(run.id)) {
-      handle.stop();
-    }
-    const agentResult = await handle.result;
-    this.agentHandles.delete(run.id);
-    this.deps.repo.finalizeAttempt(attempt.id, { exitCode: agentResult.exitCode ?? -1, sessionId: agentResult.sessionId });
-    this.deps.repo.patchRun(run.id, { currentPid: undefined });
-    await this.deps.eventLog.append(run.id, 'agent.exited', {
-      status: agentResult.status,
-      exitCode: agentResult.exitCode
-    });
-
-    if (agentResult.status === 'stopped') {
-      await this.transition(run.id, 'aborted');
-      return;
-    }
-    if (agentResult.status !== 'completed') {
-      await this.block(
-        run.id,
-        'blocked_agent_failed',
-        `agent ${agentResult.status}${agentResult.error ? `: ${agentResult.error}` : ` (exit ${agentResult.exitCode})`}`
       );
-      return;
-    }
-    if (this.canceled.has(run.id)) {
-      await this.finishAbort(run.id);
-      return;
-    }
+      this.agentHandles.set(run.id, handle);
+      this.deps.repo.patchRun(run.id, { currentPid: handle.pid });
+      // A stop that raced the spawn (canceled set while no handle existed) is
+      // honored here rather than letting the agent run to completion.
+      if (this.canceled.has(run.id)) {
+        handle.stop();
+      }
+      const agentResult = await handle.result;
+      this.agentHandles.delete(run.id);
+      this.deps.repo.finalizeAttempt(attempt.id, { exitCode: agentResult.exitCode ?? -1, sessionId: agentResult.sessionId });
+      this.deps.repo.patchRun(run.id, { currentPid: undefined });
+      await this.deps.eventLog.append(run.id, 'agent.exited', {
+        status: agentResult.status,
+        exitCode: agentResult.exitCode
+      });
 
-    await this.transition(run.id, 'verifying');
-    if (config.verifier) {
+      if (agentResult.status === 'stopped') {
+        await this.transition(run.id, 'aborted');
+        return;
+      }
+      if (agentResult.status !== 'completed') {
+        await this.block(
+          run.id,
+          'blocked_agent_failed',
+          `agent ${agentResult.status}${agentResult.error ? `: ${agentResult.error}` : ` (exit ${agentResult.exitCode})`}`
+        );
+        return;
+      }
+      if (this.canceled.has(run.id)) {
+        await this.finishAbort(run.id);
+        return;
+      }
+
+      await this.transition(run.id, 'verifying');
+      if (!config.verifier) {
+        break; // no verifier configured → nothing to fix, proceed to handoff
+      }
       await this.deps.eventLog.append(run.id, 'verifier.started', {});
       const verify = await this.deps.verifier.run(config.verifier, {
         cwd: run.worktreePath,
@@ -364,10 +376,29 @@ export class RunOrchestrator {
         variables
       });
       await this.deps.eventLog.append(run.id, 'verifier.exited', { status: verify.status, exitCode: verify.exitCode });
-      if (verify.status !== 'passed') {
-        await this.block(run.id, 'blocked_tests', `verifier ${verify.status} (exit ${verify.exitCode})`);
+      if (verify.status === 'passed') {
+        break;
+      }
+
+      // Verifier failed: auto-fix while attempts remain, else block (no fake success).
+      const reason = `verifier ${verify.status} (exit ${verify.exitCode})`;
+      if (fixesLeft <= 0) {
+        await this.block(run.id, 'blocked_tests', reason);
         return;
       }
+      if (this.canceled.has(run.id)) {
+        await this.finishAbort(run.id);
+        return;
+      }
+      fixesLeft -= 1;
+      // Non-terminal: blocked_tests loops back to implementing (a fix cycle).
+      await this.transition(run.id, 'blocked_tests');
+      await this.deps.eventLog.append(run.id, 'run.error', {
+        message: `${reason}; auto-fixing (${fixesLeft} attempt(s) left)`
+      });
+      promptPath = await this.writeFixPrompt(packDir, path.join(runDir, 'verifier.log'), cycle + 1);
+      resumeSessionId = agentResult.sessionId ?? resumeSessionId; // continue the same session
+      resumed = true;
     }
 
     if (this.canceled.has(run.id)) {
@@ -389,6 +420,21 @@ export class RunOrchestrator {
     this.deps.repo.registerArtifact({ runId: run.id, kind: 'handoff:diff.patch', path: handoff.diffPath });
     await this.deps.eventLog.append(run.id, 'handoff.created', handoff);
     await this.transition(run.id, 'pr_ready');
+  }
+
+  /** Write the fix-loop prompt for the next attempt: the failing verifier's
+   * output tail, so the (session-continuing) agent knows what to fix. */
+  private async writeFixPrompt(packDir: string, verifierLogPath: string, index: number): Promise<string> {
+    let log = '';
+    try {
+      log = (await readFile(verifierLogPath, 'utf8')).slice(-4000);
+    } catch {
+      log = '(verifier produced no captured output)';
+    }
+    const fixPath = path.join(packDir, `fix-${index}.md`);
+    const body = `# Fix attempt ${index}\n\nThe verifier failed. Fix the code in this worktree so the verifier passes, then stop.\n\nVerifier output (tail):\n\n\`\`\`\n${log}\n\`\`\`\n`;
+    await writeFile(fixPath, body, 'utf8');
+    return fixPath;
   }
 
   /** Fan a normalized agent message into the append-only event log. The raw
