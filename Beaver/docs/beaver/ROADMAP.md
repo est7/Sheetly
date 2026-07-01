@@ -29,7 +29,7 @@ task source (localJson / larkBase / …)      agent provider (claude-code / pi /
 | **B6** desktop | GUI client | `@beaver/ui`(25 控件改自 Multica,Apache-2.0 署名,tokens 换 Beaver 琥珀)· electron-vite 外壳(Main 三栏可拖拽 + 独立 **Preferences** 窗 `⌘,`)· daemon 接线(config 读写 / run 列表 / SSE 事件流,断线从 lastSeq 重连)。 | ✅ SIGN-OFF |
 | **B7** Lark task source | 多源可插拔 | LarkCli(lark-cli 协议封死在 `taskSource/lark/`)· 无状态 fetch→map → ExternalTask(id 命名空间化,runner 覆盖入 raw)· factory 接线。设计:`TaskSource` + `ExternalTask` 是 seam,加 Linear/Slack = 新模块 + 一个 case。 | ✅ SIGN-OFF(修 1 HIGH + 1 MEDIUM) |
 | **B8** 恢复 / resume / fix-loop | 韧性 | crash-recovery(启动和解僵尸 run:有 worktree→blocked_infra 可 resume,否则 aborted)· migration #2 `attempts.session_id` + 早 pin sessionId · resumeRun(复用 worktree + 上次 session 续跑)· fix-loop(verifier 失败带输出续 session 自动重试,`maxFixAttempts` 默认 0)。 | ✅ SIGN-OFF(修 2 HIGH) |
-| **B9** publisher | 审批门控发布 | `runActions` 端点 + `orchestrator.runAction`:`ship_*/pipeline_status` 跑用户 ship 脚本(argv-safe,脚本 = 用户的 SCM adapter)· `prepare_handoff` 重建 handoff · 流 `tool.*` 事件。**调用 action = 显式批准**;ship 严格 gate 到 pr_ready;Beaver 自己绝不 push/merge。 | ⏳ 修 2 HIGH,re-audit 在飞 |
+| **B9** publisher | 审批门控发布 | `runActions` 端点 + `orchestrator.runAction`:`ship_*/pipeline_status` 跑用户 ship 脚本(argv-safe,脚本 = 用户的 SCM adapter)· `prepare_handoff` 重建 handoff · 流 `tool.*` 事件。**调用 action = 显式批准**;ship 严格 gate 到 pr_ready;Beaver 自己绝不 push/merge。 | ✅ SIGN-OFF(修 2 HIGH) |
 
 ## 关键决策(D 系列,代码里体现的)
 
@@ -55,7 +55,7 @@ task source (localJson / larkBase / …)      agent provider (claude-code / pi /
 - **B6 wiring**:无 blocking → SIGN-OFF(事件 buffer 无上界记为后续 follow-up)。
 - **B7**:HIGH(rows/id 长度不匹配产假 id)、MEDIUM(权限错误被当瞬时 miss 吞)→ SIGN-OFF。
 - **B8**:HIGH(resume 未清终态元数据)、HIGH(resume 违反 per-task active 守卫)→ SIGN-OFF。
-- **B9**:HIGH(ship 未 gate 到 pr_ready,可能与 agent 并发改 worktree)、HIGH(spawn 失败无 error listener 崩 daemon)→ 修复,re-audit 在飞。
+- **B9**:HIGH(ship 未 gate 到 pr_ready,可能与 agent 并发改 worktree)、HIGH(spawn 失败无 error listener 崩 daemon)→ 修复 → SIGN-OFF。**B0–B9 全线审计通过。**
 
 ## 验证基线
 
