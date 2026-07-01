@@ -91,7 +91,7 @@ export class RunOrchestrator {
     }
     const run = this.buildRun(task, config);
     this.deps.repo.createRun(run);
-    void this.deps.eventLog.append(run.id, 'run.created', { taskId });
+    void this.deps.eventLog.append(run.id, 'run.created', { taskId }).catch(() => undefined);
     void this.execute(run, task, config).catch(() => undefined);
     return run;
   }
@@ -194,6 +194,11 @@ export class RunOrchestrator {
       });
       this.agentHandles.set(run.id, handle);
       this.deps.repo.patchRun(run.id, { currentPid: handle.pid });
+      // A stop that raced the spawn (canceled set while no handle existed) is
+      // honored here rather than letting the agent run to completion.
+      if (this.canceled.has(run.id)) {
+        handle.stop();
+      }
       const agentResult = await handle.result;
       this.agentHandles.delete(run.id);
       this.deps.repo.finalizeAttempt(attempt.id, { exitCode: agentResult.exitCode ?? -1 });
@@ -206,6 +211,10 @@ export class RunOrchestrator {
       }
       if (agentResult.status !== 'succeeded') {
         await this.block(run.id, 'blocked_agent_failed', `agent ${agentResult.status} (exit ${agentResult.exitCode})`);
+        return;
+      }
+      if (this.canceled.has(run.id)) {
+        await this.finishAbort(run.id);
         return;
       }
 
@@ -224,6 +233,10 @@ export class RunOrchestrator {
         }
       }
 
+      if (this.canceled.has(run.id)) {
+        await this.finishAbort(run.id);
+        return;
+      }
       // Build the handoff and emit its event BEFORE flipping to pr_ready, so a
       // client that observes pr_ready is guaranteed the handoff artifacts +
       // event already exist (no race).

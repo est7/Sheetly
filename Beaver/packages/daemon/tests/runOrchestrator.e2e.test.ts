@@ -171,6 +171,15 @@ describe('RunOrchestrator run-control', () => {
     expect(leaked).toHaveLength(0);
   });
 
+  test('stopRun requested during verifying still ends aborted, never pr_ready', async () => {
+    const cfg = config({ verifier: { command: 'bash', args: ['-lc', 'sleep 1'], blockingExitCodes: [] } });
+    const started = orch.startRun('task-1', cfg, [task('task-1')]);
+    await waitForStatus(started.id, ['verifying']);
+    await orch.stopRun(started.id);
+    const run = await waitForStatus(started.id, ['aborted', 'pr_ready']);
+    expect(run.status).toBe('aborted');
+  });
+
   test('retryRun starts a fresh run for the same task (prior run untouched)', async () => {
     const old: Run = { ...activeRun('run-old', 'task-1'), status: 'blocked_tests' };
     repo.createRun(old);

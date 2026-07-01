@@ -128,4 +128,39 @@ describe('daemon hardening', () => {
     expect(nope.status).toBe(404);
     expect(nope.body.error.code).toBe('NOT_FOUND');
   });
+
+  test('malformed percent-encoding in a run id -> BAD_REQUEST not INTERNAL', async () => {
+    await startWith({ defaultRepoPath: repoPath });
+    const response = await raw(paths.socketPath, 'GET', '/runs/%E0%A4%A/events');
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('BAD_REQUEST');
+  });
+
+  test('SSE ?runId filters live events server-side (D19)', async () => {
+    const tasksFile = path.join(home, 'tasks', 'local-tasks.json');
+    await fs.mkdir(path.dirname(tasksFile), { recursive: true });
+    await fs.writeFile(tasksFile, JSON.stringify([{ id: 'task-1', title: 'T', acceptanceCriteria: [] }]));
+    await startWith({
+      defaultRepoPath: repoPath,
+      defaultAgentProfile: 'generic',
+      agentProfiles: { generic: { command: 'bash', args: ['-lc', 'true'] } },
+      taskSource: { type: 'localJson', path: tasksFile }
+    });
+    await client.syncTasks();
+
+    const frames: string[] = [];
+    const req = http.request(
+      { socketPath: paths.socketPath, path: '/events?runId=other-run&since=0', method: 'GET' },
+      (res) => res.on('data', (c) => frames.push(c.toString()))
+    );
+    req.end();
+    await delay(120);
+    await client.startRun('task-1'); // emits many events for ITS run id, not 'other-run'
+    await delay(700);
+    req.destroy();
+
+    const body = frames.join('');
+    expect(body).toContain('event: ready');
+    expect(body).not.toContain('event: run'); // no cross-run leakage
+  });
 });

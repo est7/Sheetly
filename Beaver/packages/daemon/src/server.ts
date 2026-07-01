@@ -35,7 +35,7 @@ const HTTP_STATUS: Partial<Record<BeaverErrorCode, number>> = {
   NOT_IMPLEMENTED: 501
 };
 
-type SseClient = { response: ServerResponse; minSeq: number };
+type SseClient = { response: ServerResponse; minSeq: number; runId?: string };
 
 export class BeaverDaemonServer {
   private readonly configService: ConfigService;
@@ -135,6 +135,9 @@ export class BeaverDaemonServer {
   private broadcast(event: RunEvent): void {
     const frame = `event: run\nid: ${event.seq ?? ''}\ndata: ${JSON.stringify(event)}\n\n`;
     for (const client of this.sseClients) {
+      if (client.runId && client.runId !== event.runId) {
+        continue; // server-side runId filter (D19)
+      }
       if ((event.seq ?? 0) > client.minSeq) {
         client.response.write(frame);
       }
@@ -210,7 +213,7 @@ export class BeaverDaemonServer {
       return this.orchestrator.startRun(parsed.data.taskId, config, this.repo.listTasks());
     }
     if (parts[0] === 'runs' && parts[1]) {
-      return this.routeRun(method, decodeURIComponent(parts[1]), parts.slice(2));
+      return this.routeRun(method, safeDecode(parts[1]), parts.slice(2));
     }
     throw new BeaverError('NOT_FOUND', { resource: 'route', id: `${method} ${url.pathname}` });
   }
@@ -275,7 +278,7 @@ export class BeaverDaemonServer {
       response.write(`event: run\nid: ${event.seq ?? ''}\ndata: ${JSON.stringify(event)}\n\n`);
       lastSeq = event.seq ?? lastSeq;
     }
-    const client: SseClient = { response, minSeq: lastSeq };
+    const client: SseClient = { response, minSeq: lastSeq, runId };
     this.sseClients.add(client);
     response.on('close', () => this.sseClients.delete(client));
   }
@@ -306,6 +309,14 @@ async function readOptionalFile(filePath: string): Promise<string> {
 
 function issues(error: { issues: Array<{ path: (string | number)[]; message: string }> }): string {
   return error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ');
+}
+
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new BeaverError('BAD_REQUEST', { detail: 'invalid percent-encoding in path' });
+  }
 }
 
 function sendJson(response: ServerResponse, statusCode: number, payload: unknown): void {
