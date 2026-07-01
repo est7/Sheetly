@@ -21,7 +21,16 @@ export const AgentResumeConfigSchema = z.object({
   args: z.array(z.string()).default([])
 });
 
+/**
+ * Structured agent providers. When set, the daemon drives that CLI's native
+ * protocol (stream-json / event stream / app-server JSON-RPC) and `command` is
+ * the executable path while `args` become extra CLI flags. Omitted = the
+ * unstructured `{command, args}` escape hatch (GenericBackend).
+ */
+export const AgentProviderSchema = z.enum(['claude-code', 'pi', 'codex']);
+
 export const AgentProfileSchema = z.object({
+  provider: AgentProviderSchema.optional(),
   command: z.string().min(1),
   args: z.array(z.string()).default([]),
   blockingExitCodes: z.array(z.number().int()).default([]),
@@ -108,6 +117,7 @@ export const BeaverConfigSchema = z
 
 export type BeaverConfig = z.infer<typeof BeaverConfigSchema>;
 export type AgentProfile = z.infer<typeof AgentProfileSchema>;
+export type AgentProvider = z.infer<typeof AgentProviderSchema>;
 export type VerifierConfig = z.infer<typeof VerifierConfigSchema>;
 export type TaskSourceConfig = z.infer<typeof TaskSourceConfigSchema>;
 export type SubmoduleUpdateOptions = z.infer<typeof SubmoduleUpdateOptionsSchema>;

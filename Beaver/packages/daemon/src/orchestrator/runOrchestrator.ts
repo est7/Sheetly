@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import {
   BeaverError,
   isActiveRunStatus,
@@ -10,7 +11,7 @@ import {
   type RunStatus,
   type TemplateVariables
 } from '@beaver/core';
-import { AgentRunner, type AgentRunHandle } from '../agent';
+import { AgentRunner, createBackend, type AgentBackendHandle, type AgentMessage } from '../agent';
 import { EventLog } from '../eventLog';
 import { HandoffBuilder } from '../handoff';
 import { RunRepository } from '../repository/runRepository';
@@ -41,7 +42,7 @@ export type OrchestratorDeps = {
  * explicit blocked_* status — never a faked success.
  */
 export class RunOrchestrator {
-  private readonly agentHandles = new Map<string, AgentRunHandle>();
+  private readonly agentHandles = new Map<string, AgentBackendHandle>();
   private readonly canceled = new Set<string>();
 
   constructor(private readonly deps: OrchestratorDeps) {}
@@ -96,7 +97,7 @@ export class RunOrchestrator {
     return run;
   }
 
-  agentHandle(runId: string): AgentRunHandle | undefined {
+  agentHandle(runId: string): AgentBackendHandle | undefined {
     return this.agentHandles.get(runId);
   }
 
@@ -170,28 +171,38 @@ export class RunOrchestrator {
         return;
       }
       await this.transition(run.id, 'implementing');
+      const promptPath = path.join(pack.packDir, 'task.md');
       const attempt = this.deps.repo.appendAttempt({
         runId: run.id,
         phase: 'implementing',
         agentProfile: profile.name,
         command: profile.command,
         args: profile.args,
-        promptPath: path.join(pack.packDir, 'task.md'),
+        promptPath,
         stdoutPath,
         stderrPath
       });
-      await this.deps.eventLog.append(run.id, 'agent.started', { command: profile.command });
-      const handle = this.deps.agentRunner.run({
+      await this.deps.eventLog.append(run.id, 'agent.started', {
         command: profile.command,
-        args: profile.args,
-        cwd: run.worktreePath,
-        stdoutPath,
-        stderrPath,
-        blockingExitCodes: profile.blockingExitCodes,
-        variables,
-        onStdout: (line) => void this.deps.eventLog.append(run.id, 'agent.stdout', { line }),
-        onStderr: (line) => void this.deps.eventLog.append(run.id, 'agent.stderr', { line })
+        provider: profile.provider ?? null
       });
+      const promptText = await readFile(promptPath, 'utf8');
+      const backend = createBackend(profile, this.deps.agentRunner);
+      const handle = backend.run(
+        {
+          cwd: run.worktreePath,
+          promptText,
+          promptPath,
+          stdoutPath,
+          stderrPath,
+          blockingExitCodes: profile.blockingExitCodes,
+          // For a provider, profile args are extra CLI flags; the generic
+          // backend already owns them via its constructor.
+          extraArgs: profile.provider ? profile.args : undefined,
+          variables
+        },
+        (message) => this.emitAgentMessage(run.id, message)
+      );
       this.agentHandles.set(run.id, handle);
       this.deps.repo.patchRun(run.id, { currentPid: handle.pid });
       // A stop that raced the spawn (canceled set while no handle existed) is
@@ -203,14 +214,21 @@ export class RunOrchestrator {
       this.agentHandles.delete(run.id);
       this.deps.repo.finalizeAttempt(attempt.id, { exitCode: agentResult.exitCode ?? -1 });
       this.deps.repo.patchRun(run.id, { currentPid: undefined });
-      await this.deps.eventLog.append(run.id, 'agent.exited', { status: agentResult.status, exitCode: agentResult.exitCode });
+      await this.deps.eventLog.append(run.id, 'agent.exited', {
+        status: agentResult.status,
+        exitCode: agentResult.exitCode
+      });
 
       if (agentResult.status === 'stopped') {
         await this.transition(run.id, 'aborted');
         return;
       }
-      if (agentResult.status !== 'succeeded') {
-        await this.block(run.id, 'blocked_agent_failed', `agent ${agentResult.status} (exit ${agentResult.exitCode})`);
+      if (agentResult.status !== 'completed') {
+        await this.block(
+          run.id,
+          'blocked_agent_failed',
+          `agent ${agentResult.status}${agentResult.error ? `: ${agentResult.error}` : ` (exit ${agentResult.exitCode})`}`
+        );
         return;
       }
       if (this.canceled.has(run.id)) {
@@ -255,6 +273,43 @@ export class RunOrchestrator {
     } catch (error) {
       this.agentHandles.delete(run.id);
       await this.blockOnError(run.id, error);
+    }
+  }
+
+  /** Fan a normalized agent message into the append-only event log. The raw
+   * bytes are already persisted to the stdout/stderr log files by the runner;
+   * these events carry the structured stream for clients. */
+  private emitAgentMessage(runId: string, message: AgentMessage): void {
+    switch (message.type) {
+      case 'text':
+        void this.deps.eventLog.append(runId, 'agent.text', { content: message.content });
+        break;
+      case 'thinking':
+        void this.deps.eventLog.append(runId, 'agent.thinking', { content: message.content });
+        break;
+      case 'tool_use':
+        void this.deps.eventLog.append(runId, 'agent.tool_use', {
+          tool: message.tool,
+          callId: message.callId,
+          input: message.input
+        });
+        break;
+      case 'tool_result':
+        void this.deps.eventLog.append(runId, 'agent.tool_result', {
+          tool: message.tool,
+          callId: message.callId,
+          output: message.output
+        });
+        break;
+      case 'error':
+        void this.deps.eventLog.append(runId, 'agent.stderr', { line: message.content });
+        break;
+      case 'log':
+        void this.deps.eventLog.append(runId, 'agent.stderr', { line: message.content });
+        break;
+      case 'status':
+        // Lifecycle marker; the run status axis already tracks this.
+        break;
     }
   }
 
