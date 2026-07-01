@@ -137,6 +137,52 @@ describe('RunOrchestrator happy path', () => {
   });
 });
 
+async function waitForStatus(runId: string, statuses: string[]): Promise<Run> {
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    const run = repo.getRun(runId)!;
+    if (statuses.includes(run.status)) {
+      return run;
+    }
+    await delay(20);
+  }
+  return repo.getRun(runId)!;
+}
+
+describe('RunOrchestrator run-control', () => {
+  test('stopRun aborts an active run and kills the agent process group', async () => {
+    const cfg = config({ agentProfiles: { generic: { command: 'bash', args: ['-lc', 'sleep 300'] } } });
+    const started = orch.startRun('task-1', cfg, [task('task-1')]);
+    await waitForStatus(started.id, ['implementing']);
+    await orch.stopRun(started.id);
+    const run = await waitForStatus(started.id, ['aborted']);
+    expect(run.status).toBe('aborted');
+    await delay(100);
+    let leaked: string[] = [];
+    try {
+      leaked = execFileSync('pgrep', ['-f', 'sleep 300'], { stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString()
+        .trim()
+        .split('\n')
+        .filter(Boolean);
+    } catch {
+      leaked = []; // pgrep exits 1 when nothing matches
+    }
+    expect(leaked).toHaveLength(0);
+  });
+
+  test('retryRun starts a fresh run for the same task (prior run untouched)', async () => {
+    const old: Run = { ...activeRun('run-old', 'task-1'), status: 'blocked_tests' };
+    repo.createRun(old);
+    const fresh = orch.retryRun('run-old', config(), [task('task-1')]);
+    expect(fresh.id).not.toBe('run-old');
+    expect(fresh.taskId).toBe('task-1');
+    expect(fresh.status).toBe('discovered');
+    expect(repo.getRun('run-old')!.status).toBe('blocked_tests');
+    await waitForTerminal(fresh.id);
+  });
+});
+
 describe('RunOrchestrator guards', () => {
   test('rejects a second active run for the same task (D20)', () => {
     repo.createRun(activeRun('run-existing', 'task-1'));

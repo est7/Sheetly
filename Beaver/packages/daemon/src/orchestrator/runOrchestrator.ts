@@ -1,6 +1,7 @@
 import path from 'node:path';
 import {
   BeaverError,
+  isActiveRunStatus,
   type AgentProfile,
   type BeaverConfig,
   type BlockReason,
@@ -41,8 +42,38 @@ export type OrchestratorDeps = {
  */
 export class RunOrchestrator {
   private readonly agentHandles = new Map<string, AgentRunHandle>();
+  private readonly canceled = new Set<string>();
 
   constructor(private readonly deps: OrchestratorDeps) {}
+
+  /** Stop an active run: signal a running agent's process group, else abort it directly. */
+  async stopRun(runId: string): Promise<Run> {
+    const run = this.deps.repo.getRun(runId);
+    if (!run) {
+      throw new BeaverError('NOT_FOUND', { resource: 'run', id: runId });
+    }
+    if (!isActiveRunStatus(run.status)) {
+      throw new BeaverError('RUN_BLOCKED', { reason: `run ${runId} is not active` });
+    }
+    this.canceled.add(runId);
+    const handle = this.agentHandles.get(runId);
+    if (handle) {
+      handle.stop(); // execute() observes 'stopped' and transitions to aborted
+    }
+    return this.deps.repo.getRun(runId)!;
+  }
+
+  /** Retry = a brand-new run for the same task (D7); the prior run stays immutable. */
+  retryRun(runId: string, config: BeaverConfig, tasks: ExternalTask[]): Run {
+    const run = this.deps.repo.getRun(runId);
+    if (!run) {
+      throw new BeaverError('NOT_FOUND', { resource: 'run', id: runId });
+    }
+    if (isActiveRunStatus(run.status)) {
+      throw new BeaverError('RUN_BLOCKED', { reason: `run ${runId} is still active` });
+    }
+    return this.startRun(run.taskId, config, tasks);
+  }
 
   /** Synchronous guard + create; execution runs in the background. */
   startRun(taskId: string, config: BeaverConfig, tasks: ExternalTask[]): Run {
@@ -95,6 +126,10 @@ export class RunOrchestrator {
     try {
       await this.transition(run.id, 'claimed');
       await this.transition(run.id, 'preparing_workspace');
+      if (this.canceled.has(run.id)) {
+        await this.finishAbort(run.id);
+        return;
+      }
 
       const { baseCommit } = await this.deps.workspace.prepare({
         repoPath: run.repoPath,
@@ -130,6 +165,10 @@ export class RunOrchestrator {
         branchName: run.branchName
       };
 
+      if (this.canceled.has(run.id)) {
+        await this.finishAbort(run.id);
+        return;
+      }
       await this.transition(run.id, 'implementing');
       const attempt = this.deps.repo.appendAttempt({
         runId: run.id,
@@ -223,6 +262,15 @@ export class RunOrchestrator {
     this.deps.repo.updateRunStatus(runId, reason);
     this.deps.repo.patchRun(runId, { blockReason: reason, blockMessage: message, finishedAt: new Date().toISOString() });
     await this.deps.eventLog.append(runId, 'run.status_changed', { from: current, to: reason, message });
+  }
+
+  private async finishAbort(runId: string): Promise<void> {
+    const current = this.deps.repo.getRun(runId)?.status;
+    if (current && current !== 'aborted') {
+      this.deps.repo.updateRunStatus(runId, 'aborted');
+      this.deps.repo.patchRun(runId, { finishedAt: new Date().toISOString() });
+      await this.deps.eventLog.append(runId, 'run.status_changed', { from: current, to: 'aborted' });
+    }
   }
 
   private async blockOnError(runId: string, error: unknown): Promise<void> {
