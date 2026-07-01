@@ -10,7 +10,9 @@
     "test:vitest": "vitest run",
     "test:bun": "bun test packages/daemon/tests",
     "cli": "bun apps/cli/src/main.ts",
-    "daemon": "bun packages/daemon/src/main.ts"
+    "daemon": "bun packages/daemon/src/main.ts",
+    "desktop": "pnpm --filter @beaver/desktop dev",
+    "desktop:build": "pnpm --filter @beaver/desktop build"
   },
   "devDependencies": {
     "@beaver/client": "workspace:*",
