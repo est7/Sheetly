@@ -237,6 +237,10 @@ export class BeaverDaemonServer {
       this.requireRun(runId);
       return this.orchestrator.retryRun(runId, await this.configService.get(), this.repo.listTasks());
     }
+    if (method === 'POST' && tail[0] === 'resume') {
+      this.requireRun(runId);
+      return this.orchestrator.resumeRun(runId, await this.configService.get(), this.repo.listTasks());
+    }
     if (method === 'GET' && tail[0] === 'events') {
       this.requireRun(runId);
       return this.repo.readEventsSince(0, runId);

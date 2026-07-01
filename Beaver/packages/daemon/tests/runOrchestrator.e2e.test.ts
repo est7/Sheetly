@@ -211,9 +211,11 @@ describe('RunOrchestrator guards', () => {
 });
 
 describe('RunOrchestrator crash recovery (B8)', () => {
-  test('reconciles orphaned active runs to aborted, clears pid, records why', async () => {
+  test('reconciles orphaned runs: worktree-ready -> blocked_infra (resumable), else aborted', async () => {
+    // Got past prep (has a worktree/baseCommit) -> resumable.
     repo.createRun(activeRun('run-live', 'task-1'));
-    repo.patchRun('run-live', { currentPid: 999999 });
+    repo.patchRun('run-live', { currentPid: 999999, baseCommit: 'a'.repeat(40) });
+    // Never prepared a worktree -> aborted (retry starts fresh).
     repo.createRun({ ...activeRun('run-prep', 'task-2'), status: 'preparing_workspace' });
     // A terminal run must be left untouched by recovery.
     repo.createRun({ ...activeRun('run-old', 'task-3'), status: 'blocked_tests' });
@@ -222,13 +224,43 @@ describe('RunOrchestrator crash recovery (B8)', () => {
     expect(recovered.map((r) => r.id).sort()).toEqual(['run-live', 'run-prep']);
 
     const live = repo.getRun('run-live')!;
-    expect(live.status).toBe('aborted');
+    expect(live.status).toBe('blocked_infra');
     expect(live.currentPid).toBeUndefined();
-    expect(live.finishedAt).toBeTruthy();
-    expect(repo.getRun('run-old')!.status).toBe('blocked_tests');
+    expect(live.blockMessage).toContain('resume to continue');
 
-    const events = repo.readEventsSince(0, 'run-live').filter((e) => e.type === 'run.status_changed');
-    expect(events.at(-1)?.payload).toMatchObject({ to: 'aborted' });
-    expect(String(events.at(-1)?.payload.message)).toContain('daemon restart');
+    const prep = repo.getRun('run-prep')!;
+    expect(prep.status).toBe('aborted');
+    expect(prep.finishedAt).toBeTruthy();
+
+    expect(repo.getRun('run-old')!.status).toBe('blocked_tests');
+  });
+});
+
+describe('RunOrchestrator resume (B8)', () => {
+  test('resumes a blocked run in the existing worktree through to pr_ready', async () => {
+    // First run blocks on a failing verifier.
+    const failing = config({ verifier: { command: 'bash', args: ['-lc', 'exit 1'], blockingExitCodes: [] } });
+    const started = orch.startRun('task-1', failing, [task('task-1')]);
+    const blocked = await waitForTerminal(started.id);
+    expect(blocked.status).toBe('blocked_tests');
+    expect(blocked.baseCommit).toMatch(/^[0-9a-f]{40}$/);
+
+    // Resume with a passing verifier: re-implements in the same worktree, verifies, hands off.
+    const passing = config();
+    const resumed = orch.resumeRun(started.id, passing, [task('task-1')]);
+    expect(resumed.id).toBe(started.id);
+    const done = await waitForStatus(started.id, ['pr_ready', 'blocked_tests']);
+    expect(done.status).toBe('pr_ready');
+
+    // A second implementing attempt was recorded, flagged as a resume.
+    const implementing = repo.listAttempts(started.id).filter((a) => a.phase === 'implementing');
+    expect(implementing.length).toBeGreaterThanOrEqual(2);
+    const started2 = repo.readEventsSince(0, started.id).filter((e) => e.type === 'agent.started');
+    expect(started2.at(-1)?.payload).toMatchObject({ resumed: true });
+  });
+
+  test('refuses to resume a run with no prepared worktree', () => {
+    repo.createRun({ ...activeRun('run-x', 'task-1'), status: 'blocked_tests' }); // no baseCommit
+    expect(() => orch.resumeRun('run-x', config(), [task('task-1')])).toThrow(/no prepared worktree/);
   });
 });

@@ -15,14 +15,14 @@ const TRANSITIONS: Record<RunStatus, readonly RunStatus[]> = {
   discovered: ['claimed', 'aborted'],
   claimed: ['preparing_workspace', 'blocked_permission', 'blocked_infra', 'aborted'],
   preparing_workspace: ['implementing', 'blocked_infra', 'aborted'],
-  implementing: ['verifying', 'blocked_agent_failed', 'aborted'],
+  implementing: ['verifying', 'blocked_agent_failed', 'blocked_infra', 'aborted'],
   verifying: ['pr_ready', 'blocked_tests', 'blocked_infra', 'aborted'],
   pr_ready: ['done', 'aborted'],
   done: [],
   blocked_permission: ['claimed', 'aborted'],
   blocked_agent_failed: ['implementing', 'aborted'],
   blocked_tests: ['implementing', 'aborted'],
-  blocked_infra: ['claimed', 'preparing_workspace', 'verifying', 'aborted'],
+  blocked_infra: ['claimed', 'preparing_workspace', 'implementing', 'verifying', 'aborted'],
   aborted: []
 };
 

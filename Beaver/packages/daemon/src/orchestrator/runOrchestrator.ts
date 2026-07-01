@@ -19,6 +19,10 @@ import { TaskPackBuilder } from '../taskPack';
 import { VerifierRunner } from '../verifier';
 import { WorkspaceManager } from '../workspace';
 
+/** Blocked states a run can be session-resumed from (each has a prepared
+ * worktree and can re-enter `implementing` per the state machine). */
+const RESUMABLE_STATUSES: readonly RunStatus[] = ['blocked_infra', 'blocked_agent_failed', 'blocked_tests'];
+
 export type OrchestratorDeps = {
   repo: RunRepository;
   eventLog: EventLog;
@@ -59,16 +63,75 @@ export class RunOrchestrator {
   async recoverInterruptedRuns(): Promise<Run[]> {
     const recovered: Run[] = [];
     for (const run of this.deps.repo.listActiveRuns()) {
-      const message = `interrupted by daemon restart${run.currentPid ? ` (was pid ${run.currentPid})` : ''}`;
-      this.deps.repo.updateRunStatus(run.id, 'aborted');
-      this.deps.repo.patchRun(run.id, { currentPid: undefined, finishedAt: new Date().toISOString() });
-      await this.deps.eventLog.append(run.id, 'run.status_changed', { from: run.status, to: 'aborted', message });
+      // A run that got past workspace prep has a worktree + baseCommit, so it can
+      // be session-resumed → blocked_infra. One that didn't (discovered/claimed/
+      // preparing) has nothing to resume → aborted (retry starts fresh).
+      const resumable = Boolean(run.baseCommit);
+      const to = resumable ? 'blocked_infra' : 'aborted';
+      const message = `interrupted by daemon restart${run.currentPid ? ` (was pid ${run.currentPid})` : ''}${resumable ? '; resume to continue' : ''}`;
+      this.deps.repo.updateRunStatus(run.id, to);
+      this.deps.repo.patchRun(
+        run.id,
+        resumable
+          ? { currentPid: undefined, blockReason: 'blocked_infra', blockMessage: message }
+          : { currentPid: undefined, finishedAt: new Date().toISOString() }
+      );
+      await this.deps.eventLog.append(run.id, 'run.status_changed', { from: run.status, to, message });
       const reconciled = this.deps.repo.getRun(run.id);
       if (reconciled) {
         recovered.push(reconciled);
       }
     }
     return recovered;
+  }
+
+  /**
+   * Resume a blocked run: re-run the agent with its prior session id (continuing
+   * the conversation) in the already-prepared worktree, then verify + handoff.
+   * Synchronous guard + transition; execution runs in the background like start.
+   */
+  resumeRun(runId: string, config: BeaverConfig, tasks: ExternalTask[]): Run {
+    const run = this.deps.repo.getRun(runId);
+    if (!run) {
+      throw new BeaverError('NOT_FOUND', { resource: 'run', id: runId });
+    }
+    if (isActiveRunStatus(run.status)) {
+      throw new BeaverError('RUN_BLOCKED', { reason: `run ${runId} is still active` });
+    }
+    if (!RESUMABLE_STATUSES.includes(run.status)) {
+      throw new BeaverError('RUN_BLOCKED', { reason: `run ${runId} (${run.status}) is not resumable` });
+    }
+    if (!run.baseCommit) {
+      throw new BeaverError('RUN_BLOCKED', { reason: `run ${runId} has no prepared worktree to resume` });
+    }
+    const task = tasks.find((t) => t.id === run.taskId);
+    if (!task) {
+      throw new BeaverError('NOT_FOUND', { resource: 'task', id: run.taskId });
+    }
+    // Resuming makes the run active again — honour the concurrency ceiling.
+    if (this.deps.repo.listActiveRuns().length >= config.maxConcurrentRuns) {
+      throw new BeaverError('RUN_BLOCKED', { reason: `max concurrent runs reached (${config.maxConcurrentRuns})` });
+    }
+    this.canceled.delete(runId);
+    const promptPath = path.join(run.worktreePath, '.runs', run.id, 'task.md');
+    void this.implementVerifyHandoff(run, task, config, {
+      promptPath,
+      resumeSessionId: this.lastSessionId(runId),
+      resumed: true
+    }).catch((error) => this.blockOnError(run.id, error));
+    return this.deps.repo.getRun(runId)!;
+  }
+
+  /** The most recent attempt's pinned session id, if any. */
+  private lastSessionId(runId: string): string | undefined {
+    const attempts = this.deps.repo.listAttempts(runId);
+    for (let i = attempts.length - 1; i >= 0; i -= 1) {
+      const sessionId = attempts[i]?.sessionId;
+      if (sessionId) {
+        return sessionId;
+      }
+    }
+    return undefined;
   }
 
   /** Stop an active run: signal a running agent's process group, else abort it directly. */
@@ -144,9 +207,6 @@ export class RunOrchestrator {
   }
 
   private async execute(run: Run, task: ExternalTask, config: BeaverConfig): Promise<void> {
-    const runDir = path.join(this.deps.runsDir, run.id);
-    const stdoutPath = path.join(runDir, 'stdout.log');
-    const stderrPath = path.join(runDir, 'stderr.log');
     const submodules = rawStringArray(task.raw.requiredSubmodules);
     try {
       await this.transition(run.id, 'claimed');
@@ -180,133 +240,155 @@ export class RunOrchestrator {
       }
       await this.deps.eventLog.append(run.id, 'files.materialized', { packDir: pack.packDir });
 
-      const profile = this.resolveProfile(task, config);
-      const variables: TemplateVariables = {
-        taskId: task.id,
-        runId: run.id,
-        runDir,
-        repoPath: run.repoPath,
-        worktreePath: run.worktreePath,
-        branchName: run.branchName
-      };
-
       if (this.canceled.has(run.id)) {
         await this.finishAbort(run.id);
         return;
       }
-      await this.transition(run.id, 'implementing');
-      const promptPath = path.join(pack.packDir, 'task.md');
-      const attempt = this.deps.repo.appendAttempt({
-        runId: run.id,
-        phase: 'implementing',
-        agentProfile: profile.name,
-        command: profile.command,
-        args: profile.args,
-        promptPath,
-        stdoutPath,
-        stderrPath
+      await this.implementVerifyHandoff(run, task, config, {
+        baseCommit,
+        promptPath: path.join(pack.packDir, 'task.md')
       });
-      await this.deps.eventLog.append(run.id, 'agent.started', {
-        command: profile.command,
-        provider: profile.provider ?? null
-      });
-      const promptText = await readFile(promptPath, 'utf8');
-      const backend = createBackend(profile, this.deps.agentRunner);
-      let sessionPinned = false;
-      const handle = backend.run(
-        {
-          cwd: run.worktreePath,
-          promptText,
-          promptPath,
-          stdoutPath,
-          stderrPath,
-          blockingExitCodes: profile.blockingExitCodes,
-          // For a provider, profile args are extra CLI flags; the generic
-          // backend already owns them via its constructor.
-          extraArgs: profile.provider ? profile.args : undefined,
-          variables
-        },
-        (message) => {
-          // Pin the session id the instant the backend emits it (claude/codex
-          // status frames), so a crash mid-run keeps resume provenance.
-          if (!sessionPinned && message.sessionId) {
-            sessionPinned = true;
-            this.deps.repo.setAttemptSession(attempt.id, message.sessionId);
-          }
-          this.emitAgentMessage(run.id, message);
-        }
-      );
-      this.agentHandles.set(run.id, handle);
-      this.deps.repo.patchRun(run.id, { currentPid: handle.pid });
-      // A stop that raced the spawn (canceled set while no handle existed) is
-      // honored here rather than letting the agent run to completion.
-      if (this.canceled.has(run.id)) {
-        handle.stop();
-      }
-      const agentResult = await handle.result;
-      this.agentHandles.delete(run.id);
-      this.deps.repo.finalizeAttempt(attempt.id, { exitCode: agentResult.exitCode ?? -1, sessionId: agentResult.sessionId });
-      this.deps.repo.patchRun(run.id, { currentPid: undefined });
-      await this.deps.eventLog.append(run.id, 'agent.exited', {
-        status: agentResult.status,
-        exitCode: agentResult.exitCode
-      });
-
-      if (agentResult.status === 'stopped') {
-        await this.transition(run.id, 'aborted');
-        return;
-      }
-      if (agentResult.status !== 'completed') {
-        await this.block(
-          run.id,
-          'blocked_agent_failed',
-          `agent ${agentResult.status}${agentResult.error ? `: ${agentResult.error}` : ` (exit ${agentResult.exitCode})`}`
-        );
-        return;
-      }
-      if (this.canceled.has(run.id)) {
-        await this.finishAbort(run.id);
-        return;
-      }
-
-      await this.transition(run.id, 'verifying');
-      if (config.verifier) {
-        await this.deps.eventLog.append(run.id, 'verifier.started', {});
-        const verify = await this.deps.verifier.run(config.verifier, {
-          cwd: run.worktreePath,
-          verifierLogPath: path.join(runDir, 'verifier.log'),
-          variables
-        });
-        await this.deps.eventLog.append(run.id, 'verifier.exited', { status: verify.status, exitCode: verify.exitCode });
-        if (verify.status !== 'passed') {
-          await this.block(run.id, 'blocked_tests', `verifier ${verify.status} (exit ${verify.exitCode})`);
-          return;
-        }
-      }
-
-      if (this.canceled.has(run.id)) {
-        await this.finishAbort(run.id);
-        return;
-      }
-      // Build the handoff and emit its event BEFORE flipping to pr_ready, so a
-      // client that observes pr_ready is guaranteed the handoff artifacts +
-      // event already exist (no race).
-      const handoff = await this.deps.handoff.build({
-        gitBinary: config.gitBinary,
-        worktreePath: run.worktreePath,
-        runDir,
-        runId: run.id,
-        branchName: run.branchName,
-        baseCommit
-      });
-      this.deps.repo.registerArtifact({ runId: run.id, kind: 'handoff:summary.md', path: handoff.summaryPath });
-      this.deps.repo.registerArtifact({ runId: run.id, kind: 'handoff:diff.patch', path: handoff.diffPath });
-      await this.deps.eventLog.append(run.id, 'handoff.created', handoff);
-      await this.transition(run.id, 'pr_ready');
     } catch (error) {
       this.agentHandles.delete(run.id);
       await this.blockOnError(run.id, error);
     }
+  }
+
+  /**
+   * Implement → verify → handoff. Shared by a fresh run (after workspace prep)
+   * and resume (reusing the prepared worktree + task pack). `resumeSessionId`
+   * continues the agent's prior session; a stop/failure/verify-fail lands on the
+   * matching terminal/blocked state — never a faked success.
+   */
+  private async implementVerifyHandoff(
+    run: Run,
+    task: ExternalTask,
+    config: BeaverConfig,
+    opts: { baseCommit?: string; promptPath: string; resumeSessionId?: string; resumed?: boolean }
+  ): Promise<void> {
+    const runDir = path.join(this.deps.runsDir, run.id);
+    const stdoutPath = path.join(runDir, 'stdout.log');
+    const stderrPath = path.join(runDir, 'stderr.log');
+    const profile = this.resolveProfile(task, config);
+    const variables: TemplateVariables = {
+      taskId: task.id,
+      runId: run.id,
+      runDir,
+      repoPath: run.repoPath,
+      worktreePath: run.worktreePath,
+      branchName: run.branchName
+    };
+
+    await this.transition(run.id, 'implementing');
+    const attempt = this.deps.repo.appendAttempt({
+      runId: run.id,
+      phase: 'implementing',
+      agentProfile: profile.name,
+      command: profile.command,
+      args: profile.args,
+      promptPath: opts.promptPath,
+      stdoutPath,
+      stderrPath
+    });
+    await this.deps.eventLog.append(run.id, 'agent.started', {
+      command: profile.command,
+      provider: profile.provider ?? null,
+      resumed: opts.resumed ?? false
+    });
+    const promptText = await readFile(opts.promptPath, 'utf8');
+    const backend = createBackend(profile, this.deps.agentRunner);
+    let sessionPinned = false;
+    const handle = backend.run(
+      {
+        cwd: run.worktreePath,
+        promptText,
+        promptPath: opts.promptPath,
+        stdoutPath,
+        stderrPath,
+        blockingExitCodes: profile.blockingExitCodes,
+        // For a provider, profile args are extra CLI flags; the generic
+        // backend already owns them via its constructor.
+        extraArgs: profile.provider ? profile.args : undefined,
+        resumeSessionId: opts.resumeSessionId,
+        variables
+      },
+      (message) => {
+        // Pin the session id the instant the backend emits it (claude/codex
+        // status frames), so a crash mid-run keeps resume provenance.
+        if (!sessionPinned && message.sessionId) {
+          sessionPinned = true;
+          this.deps.repo.setAttemptSession(attempt.id, message.sessionId);
+        }
+        this.emitAgentMessage(run.id, message);
+      }
+    );
+    this.agentHandles.set(run.id, handle);
+    this.deps.repo.patchRun(run.id, { currentPid: handle.pid });
+    // A stop that raced the spawn (canceled set while no handle existed) is
+    // honored here rather than letting the agent run to completion.
+    if (this.canceled.has(run.id)) {
+      handle.stop();
+    }
+    const agentResult = await handle.result;
+    this.agentHandles.delete(run.id);
+    this.deps.repo.finalizeAttempt(attempt.id, { exitCode: agentResult.exitCode ?? -1, sessionId: agentResult.sessionId });
+    this.deps.repo.patchRun(run.id, { currentPid: undefined });
+    await this.deps.eventLog.append(run.id, 'agent.exited', {
+      status: agentResult.status,
+      exitCode: agentResult.exitCode
+    });
+
+    if (agentResult.status === 'stopped') {
+      await this.transition(run.id, 'aborted');
+      return;
+    }
+    if (agentResult.status !== 'completed') {
+      await this.block(
+        run.id,
+        'blocked_agent_failed',
+        `agent ${agentResult.status}${agentResult.error ? `: ${agentResult.error}` : ` (exit ${agentResult.exitCode})`}`
+      );
+      return;
+    }
+    if (this.canceled.has(run.id)) {
+      await this.finishAbort(run.id);
+      return;
+    }
+
+    await this.transition(run.id, 'verifying');
+    if (config.verifier) {
+      await this.deps.eventLog.append(run.id, 'verifier.started', {});
+      const verify = await this.deps.verifier.run(config.verifier, {
+        cwd: run.worktreePath,
+        verifierLogPath: path.join(runDir, 'verifier.log'),
+        variables
+      });
+      await this.deps.eventLog.append(run.id, 'verifier.exited', { status: verify.status, exitCode: verify.exitCode });
+      if (verify.status !== 'passed') {
+        await this.block(run.id, 'blocked_tests', `verifier ${verify.status} (exit ${verify.exitCode})`);
+        return;
+      }
+    }
+
+    if (this.canceled.has(run.id)) {
+      await this.finishAbort(run.id);
+      return;
+    }
+    // Build the handoff and emit its event BEFORE flipping to pr_ready, so a
+    // client that observes pr_ready is guaranteed the handoff artifacts +
+    // event already exist (no race).
+    const handoff = await this.deps.handoff.build({
+      gitBinary: config.gitBinary,
+      worktreePath: run.worktreePath,
+      runDir,
+      runId: run.id,
+      branchName: run.branchName,
+      baseCommit: opts.baseCommit ?? run.baseCommit ?? ''
+    });
+    this.deps.repo.registerArtifact({ runId: run.id, kind: 'handoff:summary.md', path: handoff.summaryPath });
+    this.deps.repo.registerArtifact({ runId: run.id, kind: 'handoff:diff.patch', path: handoff.diffPath });
+    await this.deps.eventLog.append(run.id, 'handoff.created', handoff);
+    await this.transition(run.id, 'pr_ready');
   }
 
   /** Fan a normalized agent message into the append-only event log. The raw
