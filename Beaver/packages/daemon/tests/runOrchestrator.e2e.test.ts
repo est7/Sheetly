@@ -304,3 +304,53 @@ describe('RunOrchestrator fix loop (B8)', () => {
     expect(repo.listAttempts(started.id).filter((a) => a.phase === 'implementing')).toHaveLength(2);
   });
 });
+
+describe("RunOrchestrator publisher actions (B9)", () => {
+  async function readyRunId(): Promise<string> {
+    const started = orch.startRun("task-1", config(), [task("task-1")]);
+    const run = await waitForTerminal(started.id);
+    expect(run.status).toBe("pr_ready");
+    return started.id;
+  }
+
+  async function shipScript(name: string, exitCode: number): Promise<string> {
+    const p = path.join(home, name);
+    await fs.writeFile(p, `#!/usr/bin/env bash\necho shipped\nexit ${exitCode}\n`, { mode: 0o755 });
+    return p;
+  }
+
+  test("runs a configured ship script, streams tool.* events, surfaces exit 0", async () => {
+    const runId = await readyRunId();
+    const cfg = config({ automation: { gitShipPushSnapshotScript: await shipScript("ship.sh", 0) } });
+    const res = await orch.runAction(runId, "ship_push_snapshot", cfg);
+    expect(res).toMatchObject({ action: "ship_push_snapshot", exitCode: 0 });
+    const types = repo.readEventsSince(0, runId).map((e) => e.type);
+    expect(types).toContain("tool.started");
+    expect(types).toContain("tool.exited");
+    expect(repo.listArtifacts(runId).some((a) => a.kind === "tool:ship_push_snapshot")).toBe(true);
+  });
+
+  test("surfaces a non-zero ship script exit code (no fake success)", async () => {
+    const runId = await readyRunId();
+    const cfg = config({ automation: { gitShipPushSnapshotScript: await shipScript("ship-fail.sh", 3) } });
+    expect((await orch.runAction(runId, "ship_push_snapshot", cfg)).exitCode).toBe(3);
+  });
+
+  test("rejects an unconfigured action explicitly", async () => {
+    const runId = await readyRunId();
+    await expect(orch.runAction(runId, "ship_fast_gate", config())).rejects.toThrow(/not configured/);
+  });
+
+  test("prepare_handoff rebuilds the handoff artifacts", async () => {
+    const runId = await readyRunId();
+    const res = await orch.runAction(runId, "prepare_handoff", config());
+    expect(res.action).toBe("prepare_handoff");
+    expect(res.exitCode).toBe(0);
+    expect(existsSync(res.outputPath!)).toBe(true);
+  });
+
+  test("refuses an action on a run with no prepared worktree", async () => {
+    repo.createRun(activeRun("run-nb", "task-9")); // no baseCommit
+    await expect(orch.runAction("run-nb", "prepare_handoff", config())).rejects.toThrow(/no prepared worktree/);
+  });
+});

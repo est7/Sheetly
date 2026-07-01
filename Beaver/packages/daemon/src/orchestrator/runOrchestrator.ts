@@ -8,8 +8,10 @@ import {
   type BlockReason,
   type ExternalTask,
   type Run,
+  type RunActionResponse,
   type RunStatus,
-  type TemplateVariables
+  type TemplateVariables,
+  type ToolAction
 } from '@beaver/core';
 import { AgentRunner, createBackend, type AgentBackendHandle, type AgentMessage } from '../agent';
 import { EventLog } from '../eventLog';
@@ -194,6 +196,75 @@ export class RunOrchestrator {
 
   agentHandle(runId: string): AgentBackendHandle | undefined {
     return this.agentHandles.get(runId);
+  }
+
+  /**
+   * Run an approval-gated delivery action against a run's prepared worktree (B9
+   * publisher). Invoking the action IS the explicit approval — Beaver never
+   * pushes / opens a PR on its own. Ship/pipeline actions run the user's
+   * configured automation script (their SCM adapter) argv-safe, streaming
+   * tool.* events; `prepare_handoff` rebuilds the local handoff. Beaver itself
+   * never force-pushes, deletes branches, or merges — the script owns SCM
+   * policy, and merge stays a human step in the SCM. Synchronous: returns the
+   * action's exit code (a non-zero script is surfaced, never a faked success).
+   */
+  async runAction(runId: string, action: ToolAction, config: BeaverConfig): Promise<RunActionResponse> {
+    const run = this.deps.repo.getRun(runId);
+    if (!run) {
+      throw new BeaverError('NOT_FOUND', { resource: 'run', id: runId });
+    }
+    if (!run.baseCommit) {
+      throw new BeaverError('RUN_BLOCKED', { reason: `run ${runId} has no prepared worktree` });
+    }
+    const runDir = path.join(this.deps.runsDir, run.id);
+
+    if (action === 'prepare_handoff') {
+      const handoff = await this.deps.handoff.build({
+        gitBinary: config.gitBinary,
+        worktreePath: run.worktreePath,
+        runDir,
+        runId: run.id,
+        branchName: run.branchName,
+        baseCommit: run.baseCommit
+      });
+      this.deps.repo.registerArtifact({ runId, kind: 'handoff:summary.md', path: handoff.summaryPath });
+      this.deps.repo.registerArtifact({ runId, kind: 'handoff:diff.patch', path: handoff.diffPath });
+      await this.deps.eventLog.append(runId, 'handoff.created', handoff);
+      return { action, exitCode: 0, outputPath: handoff.summaryPath };
+    }
+
+    const script = this.actionScript(action, config);
+    const outputPath = path.join(runDir, `${action}.log`);
+    await this.deps.eventLog.append(runId, 'tool.started', { action, command: script });
+    const handle = this.deps.agentRunner.run({
+      command: script,
+      args: [],
+      cwd: run.worktreePath,
+      stdoutPath: outputPath,
+      stderrPath: outputPath,
+      onStdout: (line) => void this.deps.eventLog.append(runId, 'tool.stdout', { action, line }),
+      onStderr: (line) => void this.deps.eventLog.append(runId, 'tool.stderr', { action, line })
+    });
+    const result = await handle.result;
+    await this.deps.eventLog.append(runId, 'tool.exited', { action, status: result.status, exitCode: result.exitCode });
+    this.deps.repo.registerArtifact({ runId, kind: `tool:${action}`, path: outputPath });
+    return { action, exitCode: result.exitCode, outputPath };
+  }
+
+  /** Resolve the configured automation script for a scripted action, or fail
+   * explicitly — an unconfigured ship action must not silently no-op. */
+  private actionScript(action: Exclude<ToolAction, 'prepare_handoff'>, config: BeaverConfig): string {
+    const automation = config.automation;
+    const script =
+      action === 'pipeline_status'
+        ? automation?.pipelineStatusScript
+        : action === 'ship_fast_gate'
+          ? automation?.gitShipFastGateScript
+          : automation?.gitShipPushSnapshotScript;
+    if (!script) {
+      throw new BeaverError('CONFIG_INVALID', { detail: `action ${action} is not configured (set the matching automation script)` });
+    }
+    return script;
   }
 
   private buildRun(task: ExternalTask, config: BeaverConfig): Run {

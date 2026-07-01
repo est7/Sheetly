@@ -220,14 +220,22 @@ export class BeaverDaemonServer {
       return this.orchestrator.startRun(parsed.data.taskId, config, this.repo.listTasks());
     }
     if (parts[0] === 'runs' && parts[1]) {
-      return this.routeRun(method, safeDecode(parts[1]), parts.slice(2));
+      return this.routeRun(method, safeDecode(parts[1]), parts.slice(2), request);
     }
     throw new BeaverError('NOT_FOUND', { resource: 'route', id: `${method} ${url.pathname}` });
   }
 
-  private async routeRun(method: string, runId: string, tail: string[]): Promise<unknown> {
+  private async routeRun(method: string, runId: string, tail: string[], request: IncomingMessage): Promise<unknown> {
     if (method === 'GET' && tail.length === 0) {
       return this.requireRun(runId);
+    }
+    if (method === 'POST' && tail[0] === 'actions') {
+      this.requireRun(runId);
+      const parsed = REQUEST_SCHEMAS.runActions.safeParse(await readJsonBody(request));
+      if (!parsed.success) {
+        throw new BeaverError('BAD_REQUEST', { detail: 'action is required' });
+      }
+      return this.orchestrator.runAction(runId, parsed.data.action, await this.configService.get());
     }
     if (method === 'POST' && tail[0] === 'stop') {
       this.requireRun(runId);
