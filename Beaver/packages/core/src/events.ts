@@ -35,7 +35,9 @@ export const RunEventSchema = z.object({
   runId: z.string().min(1),
   type: z.enum(RUN_EVENT_TYPES),
   timestamp: z.string().min(1),
-  payload: z.record(z.unknown())
+  payload: z.record(z.unknown()),
+  /** Monotonic global sequence (SQLite rowid) assigned on append — the D19 cursor. */
+  seq: z.number().int().optional()
 });
 
 export type RunEvent = z.infer<typeof RunEventSchema>;

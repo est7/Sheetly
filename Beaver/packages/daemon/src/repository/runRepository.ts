@@ -7,6 +7,8 @@ import {
   type AttemptPhase,
   type ExternalTask,
   type Run,
+  type RunEvent,
+  type RunEventType,
   type RunStatus
 } from '@beaver/core';
 import { CURRENT_SCHEMA_VERSION, runMigrations } from './migrations';
@@ -232,6 +234,30 @@ export class RunRepository {
       this.db.query('SELECT * FROM artifacts WHERE run_id = ? ORDER BY created_at ASC').all(runId) as Row[]
     ).map(artifactFromRow);
   }
+
+  // ---- events (append-only, monotonic seq — D19) ----
+
+  appendEvent(input: { runId: string; type: RunEventType; payload: Record<string, unknown> }): RunEvent {
+    const id = newId();
+    const timestamp = isoNow();
+    const row = this.db
+      .query(
+        `INSERT INTO events (id, run_id, type, timestamp, payload_json) VALUES (?, ?, ?, ?, ?) RETURNING seq`
+      )
+      .get(id, input.runId, input.type, timestamp, JSON.stringify(input.payload)) as { seq: number };
+    return { id, runId: input.runId, type: input.type, timestamp, payload: input.payload, seq: Number(row.seq) };
+  }
+
+  readEventsSince(sinceSeq: number, runId?: string): RunEvent[] {
+    const rows = (
+      runId
+        ? this.db
+            .query('SELECT * FROM events WHERE seq > ? AND run_id = ? ORDER BY seq ASC')
+            .all(sinceSeq, runId)
+        : this.db.query('SELECT * FROM events WHERE seq > ? ORDER BY seq ASC').all(sinceSeq)
+    ) as Row[];
+    return rows.map(eventFromRow);
+  }
 }
 
 // ---- row mappers ----
@@ -305,6 +331,17 @@ function taskFromRow(row: Row): ExternalTask {
     runnerOwner: optStr(row.runner_owner),
     runnerRunId: optStr(row.runner_run_id),
     raw: JSON.parse(str(row.raw_json)) as Record<string, unknown>
+  };
+}
+
+function eventFromRow(row: Row): RunEvent {
+  return {
+    id: str(row.id),
+    runId: str(row.run_id),
+    type: str(row.type) as RunEventType,
+    timestamp: str(row.timestamp),
+    payload: JSON.parse(str(row.payload_json)) as Record<string, unknown>,
+    seq: Number(row.seq)
   };
 }
 
