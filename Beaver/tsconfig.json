@@ -18,6 +18,7 @@
     "vitest.config.ts"
   ],
   "exclude": [
-    "packages/daemon/**"
+    "packages/daemon/**",
+    "packages/ui/**"
   ]
 }

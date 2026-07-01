@@ -1,0 +1,13 @@
+@beaver/ui
+
+Portions of this package (the controls under components/ui/, lib/utils.ts,
+and the design tokens under styles/) are adapted from Multica
+(https://github.com/multica-ai/multica), licensed under a modified Apache
+License 2.0. The underlying component lineage is shadcn/ui + @base-ui/react.
+
+Adaptations: import scope rewritten (@multica/ui -> @beaver/ui) and design
+tokens rebranded for Beaver. Beaver does not ship or redistribute Multica's
+frontend (apps/web) or its brand/logo.
+
+Multica © 2025 Multica, Inc. — Apache-2.0 with additional conditions.
+See http://www.apache.org/licenses/LICENSE-2.0.
