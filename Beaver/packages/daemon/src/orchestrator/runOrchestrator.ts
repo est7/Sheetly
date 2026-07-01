@@ -108,11 +108,19 @@ export class RunOrchestrator {
     if (!task) {
       throw new BeaverError('NOT_FOUND', { resource: 'task', id: run.taskId });
     }
-    // Resuming makes the run active again — honour the concurrency ceiling.
-    if (this.deps.repo.listActiveRuns().length >= config.maxConcurrentRuns) {
+    // Resuming makes the run active again — honour the same guards as startRun:
+    // one active run per task (D20) and the concurrency ceiling.
+    const active = this.deps.repo.listActiveRuns();
+    if (active.some((r) => r.taskId === run.taskId)) {
+      throw new BeaverError('RUN_BLOCKED', { reason: `task ${run.taskId} already has an active run` });
+    }
+    if (active.length >= config.maxConcurrentRuns) {
       throw new BeaverError('RUN_BLOCKED', { reason: `max concurrent runs reached (${config.maxConcurrentRuns})` });
     }
     this.canceled.delete(runId);
+    // Reactivating a terminal/blocked run: clear the block + finish metadata so a
+    // resumed run that reaches pr_ready is not simultaneously "ready" and "blocked".
+    this.deps.repo.patchRun(runId, { blockReason: undefined, blockMessage: undefined, finishedAt: undefined });
     const promptPath = path.join(run.worktreePath, '.runs', run.id, 'task.md');
     void this.implementVerifyHandoff(run, task, config, {
       promptPath,

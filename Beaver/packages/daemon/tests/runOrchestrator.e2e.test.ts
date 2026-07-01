@@ -251,6 +251,10 @@ describe('RunOrchestrator resume (B8)', () => {
     expect(resumed.id).toBe(started.id);
     const done = await waitForStatus(started.id, ['pr_ready', 'blocked_tests']);
     expect(done.status).toBe('pr_ready');
+    // Reactivation cleared the prior terminal/blocked metadata (not both ready + blocked).
+    expect(done.blockReason).toBeUndefined();
+    expect(done.blockMessage).toBeUndefined();
+    expect(done.finishedAt).toBeUndefined();
 
     // A second implementing attempt was recorded, flagged as a resume.
     const implementing = repo.listAttempts(started.id).filter((a) => a.phase === 'implementing');
@@ -262,6 +266,13 @@ describe('RunOrchestrator resume (B8)', () => {
   test('refuses to resume a run with no prepared worktree', () => {
     repo.createRun({ ...activeRun('run-x', 'task-1'), status: 'blocked_tests' }); // no baseCommit
     expect(() => orch.resumeRun('run-x', config(), [task('task-1')])).toThrow(/no prepared worktree/);
+  });
+
+  test('refuses to resume when the task already has another active run (D20)', () => {
+    const blocked = { ...activeRun('run-blocked', 'task-1'), status: 'blocked_tests' as const, baseCommit: 'a'.repeat(40) };
+    repo.createRun(blocked);
+    repo.createRun(activeRun('run-active', 'task-1')); // a concurrent active run for the same task
+    expect(() => orch.resumeRun('run-blocked', config(), [task('task-1')])).toThrow(/active run/);
   });
 });
 
