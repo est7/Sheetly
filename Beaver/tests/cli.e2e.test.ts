@@ -66,13 +66,13 @@ describe('CLI E2E (real bun process + auto-spawned daemon)', () => {
   });
 
   it('unimplemented command exits 1 with a NOT_IMPLEMENTED error body (--json)', () => {
-    const { status, stderr } = cli(['runs', 'list', '--json']);
+    const { status, stderr } = cli(['runs', 'files', 'nonexistent', '--json']);
     expect(status).toBe(1);
     expect(JSON.parse(stderr).error.code).toBe('NOT_IMPLEMENTED');
   });
 
   it('localizes the error to zh-CN via --lang', () => {
-    const { status, stderr } = cli(['runs', 'list', '--lang', 'zh-CN']);
+    const { status, stderr } = cli(['runs', 'files', 'nonexistent', '--lang', 'zh-CN']);
     expect(status).toBe(1);
     expect(stderr).toContain('尚未实现');
   });

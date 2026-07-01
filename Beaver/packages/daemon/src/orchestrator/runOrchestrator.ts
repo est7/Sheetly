@@ -224,7 +224,9 @@ export class RunOrchestrator {
         }
       }
 
-      await this.transition(run.id, 'pr_ready');
+      // Build the handoff and emit its event BEFORE flipping to pr_ready, so a
+      // client that observes pr_ready is guaranteed the handoff artifacts +
+      // event already exist (no race).
       const handoff = await this.deps.handoff.build({
         gitBinary: config.gitBinary,
         worktreePath: run.worktreePath,
@@ -236,6 +238,7 @@ export class RunOrchestrator {
       this.deps.repo.registerArtifact({ runId: run.id, kind: 'handoff:summary.md', path: handoff.summaryPath });
       this.deps.repo.registerArtifact({ runId: run.id, kind: 'handoff:diff.patch', path: handoff.diffPath });
       await this.deps.eventLog.append(run.id, 'handoff.created', handoff);
+      await this.transition(run.id, 'pr_ready');
     } catch (error) {
       this.agentHandles.delete(run.id);
       await this.blockOnError(run.id, error);

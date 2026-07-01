@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { RepoValidation } from '@beaver/core';
+import type { GitStatus, RepoValidation } from '@beaver/core';
 import { runGit } from './git/gitExec';
 
 /**
@@ -23,6 +23,20 @@ export class GitService {
       repoPath,
       isGitWorktree: true,
       currentBranch: branch.code === 0 ? branch.stdout.trim() : undefined
+    };
+  }
+
+  async getStatus(worktreePath: string): Promise<GitStatus> {
+    const branch = await runGit(this.gitBinary, worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    const status = await runGit(this.gitBinary, worktreePath, ['status', '--porcelain=v1']);
+    const files = status.stdout
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .map((line) => ({ index: line[0] ?? ' ', workingTree: line[1] ?? ' ', path: line.slice(3) }));
+    return {
+      branch: branch.code === 0 ? branch.stdout.trim() : undefined,
+      clean: files.length === 0,
+      files
     };
   }
 }

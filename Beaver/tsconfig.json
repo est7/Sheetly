@@ -18,8 +18,6 @@
     "vitest.config.ts"
   ],
   "exclude": [
-    "packages/daemon/src/repository/**",
-    "packages/daemon/src/orchestrator/**",
-    "packages/daemon/tests/**"
+    "packages/daemon/**"
   ]
 }
