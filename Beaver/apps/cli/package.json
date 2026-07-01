@@ -1,0 +1,13 @@
+{
+  "name": "@beaver/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "beaver": "./src/main.ts"
+  },
+  "dependencies": {
+    "@beaver/client": "workspace:*",
+    "@beaver/core": "workspace:*"
+  }
+}

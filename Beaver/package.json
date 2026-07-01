@@ -1,0 +1,25 @@
+{
+  "name": "@beaver/root",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Beaver: local development loop runner (production build of the Workcell prototype).",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.bun.json",
+    "test": "vitest run && bun test packages/daemon/tests",
+    "test:vitest": "vitest run",
+    "test:bun": "bun test packages/daemon/tests",
+    "cli": "bun apps/cli/src/main.ts",
+    "daemon": "bun packages/daemon/src/main.ts"
+  },
+  "devDependencies": {
+    "@beaver/client": "workspace:*",
+    "@beaver/core": "workspace:*",
+    "@beaver/daemon": "workspace:*",
+    "@types/node": "^22.10.2",
+    "bun-types": "^1.3.14",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
