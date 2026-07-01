@@ -79,6 +79,15 @@ describe('AgentRunner argv safety', () => {
   });
 });
 
+describe('AgentRunner stream flush', () => {
+  test('flushes a final line written without a trailing newline', async () => {
+    const lines: string[] = [];
+    const handle = new AgentRunner().run(baseInput({ args: ['-lc', 'printf partial'], onStdout: (l) => lines.push(l) }));
+    await handle.result;
+    expect(lines).toContain('partial');
+  });
+});
+
 describe('AgentRunner stop', () => {
   test('SIGINT to the group stops the child and its grandchildren', async () => {
     let gcPid = 0;

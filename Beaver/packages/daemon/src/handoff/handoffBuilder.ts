@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { runGit } from '../git/gitExec';
+import { runGitOrThrow } from '../git/gitExec';
 
 export type HandoffInput = {
   gitBinary?: string;
@@ -23,8 +23,10 @@ export type HandoffResult = { summaryPath: string; diffPath: string };
 export class HandoffBuilder {
   async build(input: HandoffInput): Promise<HandoffResult> {
     const gitBinary = input.gitBinary ?? 'git';
-    const status = await runGit(gitBinary, input.worktreePath, ['status', '--short']);
-    const diff = await runGit(gitBinary, input.worktreePath, ['diff', '--binary', 'HEAD', '--']);
+    // Fail fast on a git error (invalid worktree / failed diff) — never write a
+    // fake "no changes" handoff on top of a failed command.
+    const status = await runGitOrThrow(gitBinary, input.worktreePath, ['status', '--short']);
+    const diff = await runGitOrThrow(gitBinary, input.worktreePath, ['diff', '--binary', 'HEAD', '--']);
 
     await fs.mkdir(input.runDir, { recursive: true });
     const summaryPath = path.join(input.runDir, 'summary.md');

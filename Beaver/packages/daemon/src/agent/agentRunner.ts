@@ -122,4 +122,11 @@ function streamLines(
       index = buffer.indexOf('\n');
     }
   });
+  // Flush a final line that the process wrote without a trailing newline.
+  stream.on('end', () => {
+    if (onLine && buffer.length > 0) {
+      onLine(buffer);
+      buffer = '';
+    }
+  });
 }

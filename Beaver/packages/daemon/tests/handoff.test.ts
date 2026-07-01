@@ -47,4 +47,12 @@ describe('HandoffBuilder.build', () => {
     expect(diff).toContain('README.md');
     expect(diff).toContain('changed line');
   });
+
+  test('fails fast on an invalid worktree instead of faking an empty handoff', async () => {
+    const notRepo = path.join(root, 'not-a-repo');
+    await fs.mkdir(notRepo, { recursive: true });
+    await expect(
+      new HandoffBuilder().build({ worktreePath: notRepo, runDir: path.join(root, 'runs', 'r'), runId: 'r', branchName: 'b' })
+    ).rejects.toBeTruthy();
+  });
 });
