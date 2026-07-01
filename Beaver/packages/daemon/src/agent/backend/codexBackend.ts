@@ -94,6 +94,7 @@ export class CodexBackend implements AgentBackend {
       cwd: options.cwd,
       stdoutPath: options.stdoutPath,
       stderrPath: options.stderrPath,
+      blockingExitCodes: options.blockingExitCodes,
       stdin: 'pipe',
       onStdout: (line) => client.handleLine(line),
       onStderr: (line) => onMessage({ type: 'log', content: line })

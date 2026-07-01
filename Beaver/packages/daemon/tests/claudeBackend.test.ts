@@ -125,19 +125,20 @@ describe('ClaudeBackend (fake CLI)', () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  async function fakeClaude(bodyLines: string[]): Promise<string> {
+  async function fakeClaude(bodyLines: string[], exitCode = 0): Promise<string> {
     const script = path.join(dir, 'fake-claude.sh');
     const emits = bodyLines.map((l) => `printf '%s\\n' ${JSON.stringify(l)}`).join('\n');
-    await fs.writeFile(script, `#!/usr/bin/env bash\n${emits}\nexit 0\n`, { mode: 0o755 });
+    await fs.writeFile(script, `#!/usr/bin/env bash\n${emits}\nexit ${exitCode}\n`, { mode: 0o755 });
     return script;
   }
 
-  function opts(): AgentBackendOptions {
+  function opts(overrides: Partial<AgentBackendOptions> = {}): AgentBackendOptions {
     return {
       cwd: dir,
       promptText: 'do the thing',
       stdoutPath: path.join(dir, 'stdout.log'),
-      stderrPath: path.join(dir, 'stderr.log')
+      stderrPath: path.join(dir, 'stderr.log'),
+      ...overrides
     };
   }
 
@@ -169,6 +170,18 @@ describe('ClaudeBackend (fake CLI)', () => {
     const result = await handle.result;
     expect(result.status).toBe('failed');
     expect(result.error).toBe('boom');
+  });
+
+  test('a configured blocking exit code classifies as blocked (not failed)', async () => {
+    const script = await fakeClaude(
+      [
+        JSON.stringify({ type: 'system', session_id: 's' }),
+        JSON.stringify({ type: 'result', session_id: 's', result: 'done', is_error: false })
+      ],
+      2
+    );
+    const result = await new ClaudeBackend(script).run(opts({ blockingExitCodes: [2] }), () => {}).result;
+    expect(result.status).toBe('blocked');
   });
 
   test('exit 0 without a result frame is a failure, not a fake success', async () => {

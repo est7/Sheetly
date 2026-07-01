@@ -73,6 +73,7 @@ export class ClaudeBackend implements AgentBackend {
       cwd: options.cwd,
       stdoutPath: options.stdoutPath,
       stderrPath: options.stderrPath,
+      blockingExitCodes: options.blockingExitCodes,
       stdin: 'pipe',
       onStdout,
       onStderr: (line) => onMessage({ type: 'log', content: line })
