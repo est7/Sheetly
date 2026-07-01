@@ -1,1 +1,1 @@
-export { WorkspaceManager, type PrepareWorkspaceInput } from './workspaceManager';
+export { WorkspaceManager, normalizeRepoKey, type PrepareWorkspaceInput } from './workspaceManager';

@@ -53,4 +53,11 @@ describe('TaskPackBuilder.materialize', () => {
     const findings = JSON.parse(await fs.readFile(path.join(packDir, 'findings.json'), 'utf8'));
     expect(findings).toEqual({ findings: [] });
   });
+
+  test('rejects a runId that would escape the generated roots', async () => {
+    await expect(builder.materialize({ ...input('x'), runId: '../escape' })).rejects.toMatchObject({
+      code: 'BAD_REQUEST'
+    });
+    expect(existsSync(path.join(root, 'escape'))).toBe(false);
+  });
 });

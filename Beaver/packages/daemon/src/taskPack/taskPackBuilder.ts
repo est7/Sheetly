@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { assertSafePathSegment } from '@beaver/core';
 
 export type TaskPackInput = {
   runId: string;
@@ -30,6 +31,7 @@ export type TaskPackResult = {
  */
 export class TaskPackBuilder {
   async materialize(input: TaskPackInput): Promise<TaskPackResult> {
+    assertSafePathSegment(input.runId, 'runId'); // used directly in both generated roots
     const packDir = path.join(input.worktreePath, '.runs', input.runId);
     const runDir = path.join(input.runsDir, input.runId);
     await fs.mkdir(packDir, { recursive: true });

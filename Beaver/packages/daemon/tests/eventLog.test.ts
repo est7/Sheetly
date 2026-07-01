@@ -58,6 +58,10 @@ describe('EventLog append', () => {
     expect(JSON.parse(lines[1]!).type).toBe('agent.stdout');
   });
 
+  test('rejects a runId that would escape the mirror root', async () => {
+    await expect(log.append('../escape', 'run.created', {})).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+  });
+
   test('unsubscribe stops further delivery', async () => {
     const seen: RunEvent[] = [];
     const off = log.on((event) => seen.push(event));

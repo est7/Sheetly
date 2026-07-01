@@ -87,6 +87,11 @@ describe('RunRepository migrations (D8)', () => {
 });
 
 describe('RunRepository runs + state machine', () => {
+  test('rejects a runId that is unsafe as a filesystem path segment', () => {
+    expect(() => repo.createRun(makeRun({ id: '../escape' }))).toThrow();
+    expect(() => repo.createRun(makeRun({ id: 'a/b' }))).toThrow();
+  });
+
   test('creates, gets, and lists runs newest-first', () => {
     const a = makeRun({ createdAt: '2026-06-30T00:00:01.000Z' });
     const b = makeRun({ createdAt: '2026-06-30T00:00:02.000Z' });

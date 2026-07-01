@@ -6,6 +6,7 @@ export * from './events';
 export * from './errors';
 export * from './config';
 export * from './submodules';
+export * from './pathSafety';
 export * from './templates';
 export * from './api';
 export * from './apiSchemas';

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { RunEvent, RunEventType } from '@beaver/core';
+import { assertSafePathSegment, type RunEvent, type RunEventType } from '@beaver/core';
 import type { AppendEventInput, EventStore } from './eventStore';
 
 /**
@@ -23,6 +23,7 @@ export class EventLog {
   }
 
   async append(runId: string, type: RunEventType, payload: Record<string, unknown> = {}): Promise<RunEvent> {
+    assertSafePathSegment(runId, 'runId'); // the mirror path uses runId directly
     const input: AppendEventInput = { runId, type, payload };
     const event = this.store.appendEvent(input);
     await this.mirror(event);

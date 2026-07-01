@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { BeaverError } from '@beaver/core';
-import { WorkspaceManager } from '../src/workspace';
+import { WorkspaceManager, normalizeRepoKey } from '../src/workspace';
 
 let root: string;
 let repoPath: string;
@@ -76,5 +76,11 @@ describe('WorkspaceManager.prepare', () => {
     expect(a.baseCommit).toBe(b.baseCommit);
     expect(existsSync(path.join(root, 'wt-a', 'README.md'))).toBe(true);
     expect(existsSync(path.join(root, 'wt-b', 'README.md'))).toBe(true);
+  });
+
+  test('normalizes equivalent repo path spellings to one lock key (D18)', () => {
+    const key = normalizeRepoKey(repoPath);
+    expect(normalizeRepoKey(`${repoPath}/.`)).toBe(key);
+    expect(normalizeRepoKey(`${repoPath}/`)).toBe(key);
   });
 });

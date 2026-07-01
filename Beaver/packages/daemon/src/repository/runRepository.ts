@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import {
   BeaverError,
   assertRunTransition,
+  assertSafePathSegment,
   type Artifact,
   type Attempt,
   type AttemptPhase,
@@ -63,6 +64,9 @@ export class RunRepository {
   // ---- runs ----
 
   createRun(run: Run): void {
+    // A runId is used as a filesystem path segment (mirror / task pack); never
+    // persist one that could escape its root.
+    assertSafePathSegment(run.id, 'runId');
     this.db
       .query(
         `INSERT INTO runs (id, task_id, status, repo_path, worktree_path, branch_name, base_branch, base_commit,

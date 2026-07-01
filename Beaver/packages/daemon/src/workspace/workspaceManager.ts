@@ -1,6 +1,20 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, realpathSync } from 'node:fs';
+import path from 'node:path';
 import { BeaverError, validateSubmodulePaths, type SubmoduleUpdateOptions } from '@beaver/core';
 import { runGit, runGitOrThrow } from '../git/gitExec';
+
+/**
+ * Canonical lock key for a repo path: resolves symlinks and `.`/`..`/trailing-
+ * slash spellings so equivalent paths to the SAME physical repo share one lock
+ * (D18). Falls back to a lexical resolve when the path does not exist yet.
+ */
+export function normalizeRepoKey(repoPath: string): string {
+  try {
+    return realpathSync(repoPath);
+  } catch {
+    return path.resolve(repoPath);
+  }
+}
 
 export type PrepareWorkspaceInput = {
   repoPath: string;
@@ -33,7 +47,7 @@ export class WorkspaceManager {
   constructor(private readonly gitBinary = 'git') {}
 
   async prepare(input: PrepareWorkspaceInput): Promise<{ baseCommit: string }> {
-    return this.withRepoLock(input.repoPath, () => this.doPrepare(input));
+    return this.withRepoLock(normalizeRepoKey(input.repoPath), () => this.doPrepare(input));
   }
 
   private async doPrepare(input: PrepareWorkspaceInput): Promise<{ baseCommit: string }> {
