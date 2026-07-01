@@ -121,6 +121,21 @@ describe('LarkBaseTaskSource.pollAssignedTasks', () => {
     expect(await new LarkBaseTaskSource(larkConfig(), cli).pollAssignedTasks()).toHaveLength(0);
   });
 
+  test('propagates a permanent permission error on stage read (not a transient miss)', async () => {
+    const cli = new LarkCli(
+      'lark-cli',
+      fakeCli({
+        auth: AUTH_OK,
+        '+field-list': { ok: true, data: { fields: [{ name: 'Title', type: 'text' }, { name: 'Owner', type: 'user' }] } },
+        '+record-list': { ok: true, data: { fields: ['Title', 'Owner'], data: [['X', [{ id: OU }]]], record_id_list: ['rec1'], has_more: false } },
+        '+record-history-list': { ok: false, error: { subtype: 'permission_denied', message: 'denied' } }
+      })
+    );
+    await expect(new LarkBaseTaskSource(larkConfig(), cli).pollAssignedTasks()).rejects.toMatchObject({
+      subtype: 'permission_denied'
+    });
+  });
+
   test('rejects a project with no user/person field', async () => {
     const cli = new LarkCli(
       'lark-cli',

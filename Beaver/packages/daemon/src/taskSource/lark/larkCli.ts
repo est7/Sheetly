@@ -102,6 +102,13 @@ export class LarkCli {
       const fields = z.array(z.string()).parse(data.fields);
       const rows = z.array(z.array(z.unknown())).parse(data.data ?? []);
       const recordIds = z.array(z.string()).parse(data.record_id_list);
+      // Rows and their ids must line up 1:1; a mismatch would zip a row against
+      // an undefined id and mint a fake `lark:<table>:undefined` task — reject it.
+      if (recordIds.length !== rows.length) {
+        throw new LarkCliError(
+          `lark-cli record-list returned ${rows.length} rows but ${recordIds.length} record ids`
+        );
+      }
       if (fields.length > 0 && !titleField) {
         titleField = fields[0] as string;
       }

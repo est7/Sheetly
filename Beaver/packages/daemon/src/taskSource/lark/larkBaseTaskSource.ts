@@ -13,6 +13,21 @@ import { parseLarkBaseUrl } from './larkUrl';
 type LarkBaseConfig = Extract<TaskSourceConfig, { type: 'larkBase' }>;
 
 /**
+ * lark-cli error subtypes that make a stage read permanently un-evaluable, not a
+ * transient miss. Swallowing these would surface completed records (stage filter
+ * bypassed) and report a successful poll despite lacking Base access — so they
+ * propagate. Mirrors the reference implementation's fatal set.
+ */
+const FATAL_STAGE_SUBTYPES = new Set([
+  'missing_scope',
+  'no_user_identity',
+  'permission_denied',
+  'forbidden',
+  'unauthorized',
+  'access_denied'
+]);
+
+/**
  * Lark Base task source: stateless fetch → map. Each poll asks lark-cli for the
  * records assigned to the logged-in user across the configured Bitables and maps
  * them to source-neutral ExternalTasks. No local status/diff state — the runner
@@ -88,7 +103,7 @@ export class LarkBaseTaskSource implements TaskSource {
     try {
       return await this.cli.currentStage(baseToken, tableId, recordId, this.config.historyPages);
     } catch (error) {
-      if (error instanceof LarkCliError && error.authFatal) {
+      if (error instanceof LarkCliError && FATAL_STAGE_SUBTYPES.has(error.subtype)) {
         throw error;
       }
       return null;

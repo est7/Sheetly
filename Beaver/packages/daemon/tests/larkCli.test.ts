@@ -104,6 +104,14 @@ describe('LarkCli.listAssignedRecords', () => {
     const filterArg = calls[0]?.[calls[0].indexOf('--filter-json') + 1] ?? '';
     expect(JSON.parse(filterArg)).toEqual({ logic: 'or', conditions: [['Owner', 'contains', 'ou_1']] });
   });
+
+  test('rejects a rows/record-id length mismatch (no fake undefined id)', async () => {
+    const page = { ok: true, data: { fields: ['Title'], data: [['a'], ['b']], record_id_list: ['rec1'], has_more: false } };
+    const { spawn } = fakeCli({ '+record-list': [page] });
+    await expect(new LarkCli('lark-cli', spawn).listAssignedRecords('B', 'tbl1', 'ou_1', ['Owner'])).rejects.toThrow(
+      /2 rows but 1 record ids/
+    );
+  });
 });
 
 describe('LarkCli.currentStage', () => {
