@@ -19,6 +19,7 @@
   ],
   "exclude": [
     "packages/daemon/**",
-    "packages/ui/**"
+    "packages/ui/**",
+    "packages/desktop/**"
   ]
 }
