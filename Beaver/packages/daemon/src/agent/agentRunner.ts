@@ -10,13 +10,23 @@ export type AgentRunInput = {
   stderrPath: string;
   blockingExitCodes?: number[];
   variables?: TemplateVariables;
+  /** 'pipe' opens a writable stdin (stream-json agents need it); default 'ignore'. */
+  stdin?: 'ignore' | 'pipe';
   onStdout?: (line: string) => void;
   onStderr?: (line: string) => void;
 };
 
 export type AgentRunStatus = 'succeeded' | 'blocked' | 'failed' | 'stopped';
 export type AgentRunResult = { status: AgentRunStatus; exitCode: number | null; signal: NodeJS.Signals | null };
-export type AgentRunHandle = { pid: number | undefined; result: Promise<AgentRunResult>; stop: () => void };
+export type AgentRunHandle = {
+  pid: number | undefined;
+  result: Promise<AgentRunResult>;
+  stop: () => void;
+  /** Write a frame to the child's stdin; no-op unless spawned with stdin: 'pipe'. */
+  writeStdin: (data: string) => void;
+  /** Close the child's stdin; no-op unless spawned with stdin: 'pipe'. */
+  closeStdin: () => void;
+};
 
 /**
  * Spawns a headless agent as a detached process GROUP (never a shell — argv
@@ -37,8 +47,11 @@ export class AgentRunner {
       cwd: input.cwd,
       detached: true, // new process group; child.pid is the group leader
       shell: false,
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: [input.stdin === 'pipe' ? 'pipe' : 'ignore', 'pipe', 'pipe']
     });
+    // A stream-json child may exit before draining stdin; swallow the resulting
+    // EPIPE so it never crashes the daemon process.
+    child.stdin?.on('error', () => {});
 
     const outStream = createWriteStream(input.stdoutPath, { flags: 'a' });
     const errStream = createWriteStream(input.stderrPath, { flags: 'a' });
@@ -70,7 +83,29 @@ export class AgentRunner {
       timers.push(setTimeout(() => signalGroup(pid, 'SIGKILL'), this.graceMs * 2));
     };
 
-    return { pid: child.pid, result, stop };
+    const writeStdin = (data: string): void => {
+      if (!child.stdin || child.stdin.destroyed) {
+        return;
+      }
+      try {
+        child.stdin.write(data);
+      } catch {
+        // stdin already gone (child exited) — nothing to deliver
+      }
+    };
+
+    const closeStdin = (): void => {
+      if (!child.stdin || child.stdin.destroyed) {
+        return;
+      }
+      try {
+        child.stdin.end();
+      } catch {
+        // already closed
+      }
+    };
+
+    return { pid: child.pid, result, stop, writeStdin, closeStdin };
   }
 }
 
