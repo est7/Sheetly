@@ -8,7 +8,9 @@ import tailwindcss from '@tailwindcss/vite';
 // at runtime, so cast at the boundary rather than distort it.
 const config = {
   main: {
-    plugins: [externalizeDepsPlugin()]
+    // Bundle the workspace TS packages into the main process (Node can't
+    // require raw .ts); everything else stays external.
+    plugins: [externalizeDepsPlugin({ exclude: ['@beaver/core', '@beaver/client'] })]
   },
   preload: {
     plugins: [externalizeDepsPlugin()]

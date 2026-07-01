@@ -1,54 +1,132 @@
-import type { CSSProperties } from 'react';
-import { useState, type JSX } from 'react';
-import { ListTodo, Play, FolderGit2, Settings, CircleDot, GitPullRequest } from 'lucide-react';
+import type { CSSProperties, JSX } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ListTodo, Play, FolderGit2, Settings, CircleDot, Wifi, WifiOff } from 'lucide-react';
+import type { Run, RunEvent } from '@beaver/core';
 import { Button } from '@beaver/ui/components/ui/button';
 import { Badge } from '@beaver/ui/components/ui/badge';
 import { Separator } from '@beaver/ui/components/ui/separator';
 import { ScrollArea } from '@beaver/ui/components/ui/scroll-area';
+import { Empty } from '@beaver/ui/components/ui/empty';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@beaver/ui/components/ui/resizable';
 import { cn } from '@beaver/ui/lib/utils';
 
 const DRAG: CSSProperties = { WebkitAppRegion: 'drag' } as CSSProperties;
 const NO_DRAG: CSSProperties = { WebkitAppRegion: 'no-drag' } as CSSProperties;
 
-type NavKey = 'tasks' | 'runs' | 'repos';
+type NavKey = 'runs' | 'repos';
 const NAV: { key: NavKey; label: string; icon: typeof ListTodo }[] = [
-  { key: 'tasks', label: 'Tasks', icon: ListTodo },
   { key: 'runs', label: 'Runs', icon: Play },
   { key: 'repos', label: 'Repos', icon: FolderGit2 }
 ];
 
-// Placeholder rows until the daemon run/task feed is wired.
-type RunStatus = 'implementing' | 'verifying' | 'pr_ready' | 'blocked_tests';
-const SAMPLE: { id: string; title: string; status: RunStatus }[] = [
-  { id: 'PROJ-101', title: 'Add provider abstraction to the agent runner', status: 'pr_ready' },
-  { id: 'PROJ-102', title: 'Resumable SSE cursor for the run stream', status: 'implementing' },
-  { id: 'PROJ-103', title: 'Crash-recovery on daemon restart', status: 'verifying' },
-  { id: 'PROJ-104', title: 'Lark base task source sync', status: 'blocked_tests' }
-];
+function statusVariant(status: string): 'default' | 'secondary' | 'destructive' {
+  if (status === 'pr_ready') return 'default';
+  if (status.startsWith('blocked_') || status === 'aborted') return 'destructive';
+  return 'secondary';
+}
 
-const STATUS_LABEL: Record<RunStatus, string> = {
-  implementing: 'Implementing',
-  verifying: 'Verifying',
-  pr_ready: 'PR ready',
-  blocked_tests: 'Blocked · tests'
-};
+/** One-line summary of a run event for the stream pane. */
+function describeEvent(event: RunEvent): string {
+  const p = event.payload as Record<string, unknown>;
+  switch (event.type) {
+    case 'agent.text':
+    case 'agent.thinking':
+      return String(p.content ?? '');
+    case 'agent.tool_use':
+      return `→ ${String(p.tool ?? 'tool')}`;
+    case 'agent.tool_result':
+      return `✓ ${String(p.tool ?? 'tool')}`;
+    case 'run.status_changed':
+      return `${String(p.from ?? '?')} → ${String(p.to ?? '?')}`;
+    case 'agent.stderr':
+      return String(p.line ?? '');
+    default:
+      return event.type;
+  }
+}
 
-function StatusBadge({ status }: { status: RunStatus }): JSX.Element {
-  const variant = status === 'pr_ready' ? 'default' : status === 'blocked_tests' ? 'destructive' : 'secondary';
-  return <Badge variant={variant}>{STATUS_LABEL[status]}</Badge>;
+/** Merge events into a by-id map so the snapshot backlog and the live stream
+ * can overlap without loss or duplication (D19 seq is monotonic per run). */
+function mergeEvents(base: Map<string, RunEvent>, incoming: RunEvent[]): Map<string, RunEvent> {
+  if (incoming.length === 0) return base;
+  const next = new Map(base);
+  for (const event of incoming) {
+    next.set(event.id, event);
+  }
+  return next;
 }
 
 export function App(): JSX.Element {
-  const [nav, setNav] = useState<NavKey>('tasks');
-  const [selected, setSelected] = useState(SAMPLE[0]?.id ?? '');
-  const active = SAMPLE.find((r) => r.id === selected) ?? SAMPLE[0];
+  const [nav, setNav] = useState<NavKey>('runs');
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [selected, setSelected] = useState<string>('');
+  // All runs' events, keyed by id; the pane filters to the selected run. A
+  // global buffer means live events are never dropped for an unselected run.
+  const [eventsById, setEventsById] = useState<Map<string, RunEvent>>(new Map());
+  const [connected, setConnected] = useState(false);
+  const [error, setError] = useState<string>('');
+
+  const refreshRuns = useCallback(async () => {
+    const result = await window.beaver.runs.list();
+    if (result.ok) {
+      setRuns(result.data);
+      setError('');
+      setSelected((current) => current || result.data[0]?.id || '');
+    } else {
+      setError(result.error);
+    }
+  }, []);
+
+  // Initial load + live subscriptions.
+  useEffect(() => {
+    void refreshRuns();
+    const offStatus = window.beaver.stream.onStatus(setConnected);
+    const offEvent = window.beaver.stream.onEvent((event) => {
+      setEventsById((prev) => mergeEvents(prev, [event]));
+      if (event.type === 'run.status_changed' || event.type === 'run.created') {
+        void refreshRuns();
+      }
+    });
+    return () => {
+      offStatus();
+      offEvent();
+    };
+  }, [refreshRuns]);
+
+  // Load the event backlog for the selected run; merged (not replaced) so live
+  // events that arrived first survive.
+  useEffect(() => {
+    if (!selected) return;
+    let cancelled = false;
+    void window.beaver.runs.events(selected).then((result) => {
+      if (!cancelled && result.ok) {
+        setEventsById((prev) => mergeEvents(prev, result.data));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected]);
+
+  const active = useMemo(() => runs.find((r) => r.id === selected), [runs, selected]);
+  const events = useMemo(
+    () =>
+      [...eventsById.values()]
+        .filter((e) => e.runId === selected)
+        .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0)),
+    [eventsById, selected]
+  );
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
-      {/* Drag toolbar; leaves room for the macOS traffic lights. */}
-      <div className="flex h-12 shrink-0 items-center border-b pl-20 pr-3" style={DRAG}>
+      <div className="flex h-12 shrink-0 items-center justify-between border-b pl-20 pr-3" style={DRAG}>
         <span className="text-sm font-semibold tracking-tight">Beaver</span>
+        <span
+          className="flex items-center gap-1 text-xs text-muted-foreground"
+          title={connected ? 'Connected to daemon' : 'Daemon not connected'}
+        >
+          {connected ? <Wifi className="size-3.5" /> : <WifiOff className="size-3.5" />}
+        </span>
       </div>
 
       <ResizablePanelGroup orientation="horizontal" className="flex-1">
@@ -72,7 +150,7 @@ export function App(): JSX.Element {
                 variant="ghost"
                 className="w-full justify-start gap-2"
                 style={NO_DRAG}
-                onClick={() => void window.beaver?.preferences.open()}
+                onClick={() => void window.beaver.preferences.open()}
               >
                 <Settings className="size-4" />
                 Preferences
@@ -86,23 +164,27 @@ export function App(): JSX.Element {
         <ResizablePanel defaultSize={34} minSize={24}>
           <ScrollArea className="h-full">
             <div className="flex flex-col p-2">
-              {SAMPLE.map((run) => (
-                <button
-                  key={run.id}
-                  type="button"
-                  onClick={() => setSelected(run.id)}
-                  className={cn(
-                    'flex flex-col gap-1 rounded-lg border border-transparent px-3 py-2 text-left transition-colors hover:bg-muted',
-                    selected === run.id && 'border-border bg-muted'
-                  )}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono text-xs text-muted-foreground">{run.id}</span>
-                    <StatusBadge status={run.status} />
-                  </div>
-                  <span className="text-sm">{run.title}</span>
-                </button>
-              ))}
+              {runs.length === 0 ? (
+                <Empty className="mt-16">{error || 'No runs yet'}</Empty>
+              ) : (
+                runs.map((run) => (
+                  <button
+                    key={run.id}
+                    type="button"
+                    onClick={() => setSelected(run.id)}
+                    className={cn(
+                      'flex flex-col gap-1 rounded-lg border border-transparent px-3 py-2 text-left transition-colors hover:bg-muted',
+                      selected === run.id && 'border-border bg-muted'
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate font-mono text-xs text-muted-foreground">{run.taskId}</span>
+                      <Badge variant={statusVariant(run.status)}>{run.status}</Badge>
+                    </div>
+                    <span className="truncate text-sm">{run.branchName}</span>
+                  </button>
+                ))
+              )}
             </div>
           </ScrollArea>
         </ResizablePanel>
@@ -113,16 +195,28 @@ export function App(): JSX.Element {
           <div className="flex h-full flex-col">
             <div className="flex items-center gap-2 border-b px-4 py-3">
               <CircleDot className="size-4 text-muted-foreground" />
-              <span className="font-mono text-xs text-muted-foreground">{active?.id}</span>
-              <span className="truncate text-sm font-medium">{active?.title}</span>
-              {active && <StatusBadge status={active.status} />}
+              {active ? (
+                <>
+                  <span className="font-mono text-xs text-muted-foreground">{active.taskId}</span>
+                  <span className="truncate text-sm font-medium">{active.branchName}</span>
+                  <Badge variant={statusVariant(active.status)}>{active.status}</Badge>
+                </>
+              ) : (
+                <span className="text-sm text-muted-foreground">Select a run</span>
+              )}
             </div>
             <ScrollArea className="flex-1">
-              <div className="flex flex-col gap-3 p-4 text-sm text-muted-foreground">
-                <div className="flex items-center gap-2">
-                  <GitPullRequest className="size-4" />
-                  Run stream will render here (agent.text / tool_use / handoff diff over the SSE cursor).
-                </div>
+              <div className="flex flex-col gap-1.5 p-4 font-mono text-xs">
+                {events.length === 0 ? (
+                  <span className="text-muted-foreground">No events yet.</span>
+                ) : (
+                  events.map((event) => (
+                    <div key={event.id} className="flex gap-2">
+                      <span className="shrink-0 text-muted-foreground/60">{event.type}</span>
+                      <span className="whitespace-pre-wrap break-words">{describeEvent(event)}</span>
+                    </div>
+                  ))
+                )}
               </div>
             </ScrollArea>
           </div>

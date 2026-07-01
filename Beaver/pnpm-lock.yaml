@@ -62,6 +62,12 @@ importers:
 
   packages/desktop:
     dependencies:
+      '@beaver/client':
+        specifier: workspace:*
+        version: link:../client
+      '@beaver/core':
+        specifier: workspace:*
+        version: link:../core
       '@beaver/ui':
         specifier: workspace:*
         version: link:../ui

@@ -9,7 +9,8 @@
     "paths": {
       "@": ["./src/renderer/src"],
       "@/*": ["./src/renderer/src/*"],
-      "@beaver/ui/*": ["../ui/*"]
+      "@beaver/ui/*": ["../ui/*"],
+      "@beaver/core": ["../core/src/index.ts"]
     }
   },
   "include": ["src/renderer/src/**/*.ts", "src/renderer/src/**/*.tsx", "src/preload/index.d.ts"]
