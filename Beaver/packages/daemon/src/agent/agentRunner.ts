@@ -1,0 +1,125 @@
+import { spawn } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
+import { interpolateArgs, interpolateTemplate, type TemplateVariables } from '@beaver/core';
+
+export type AgentRunInput = {
+  command: string;
+  args: string[];
+  cwd: string;
+  stdoutPath: string;
+  stderrPath: string;
+  blockingExitCodes?: number[];
+  variables?: TemplateVariables;
+  onStdout?: (line: string) => void;
+  onStderr?: (line: string) => void;
+};
+
+export type AgentRunStatus = 'succeeded' | 'blocked' | 'failed' | 'stopped';
+export type AgentRunResult = { status: AgentRunStatus; exitCode: number | null; signal: NodeJS.Signals | null };
+export type AgentRunHandle = { pid: number | undefined; result: Promise<AgentRunResult>; stop: () => void };
+
+/**
+ * Spawns a headless agent as a detached process GROUP (never a shell — argv
+ * only; templates interpolate per argv entry). stdout/stderr are appended raw to
+ * log files and streamed line-by-line to callbacks. `stop` escalates
+ * SIGINT -> SIGTERM -> SIGKILL to the whole group so child processes die too
+ * (validated by the runtime spike). Exit is classified: 0 succeeded /
+ * blockingExitCodes blocked / stopped / otherwise failed.
+ */
+export class AgentRunner {
+  constructor(private readonly graceMs = 2000) {}
+
+  run(input: AgentRunInput): AgentRunHandle {
+    const command = input.variables ? interpolateTemplate(input.command, input.variables) : input.command;
+    const args = input.variables ? interpolateArgs(input.args, input.variables) : input.args;
+
+    const child = spawn(command, args, {
+      cwd: input.cwd,
+      detached: true, // new process group; child.pid is the group leader
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    const outStream = createWriteStream(input.stdoutPath, { flags: 'a' });
+    const errStream = createWriteStream(input.stderrPath, { flags: 'a' });
+    streamLines(child.stdout, outStream, input.onStdout);
+    streamLines(child.stderr, errStream, input.onStderr);
+
+    let stopped = false;
+    const timers: NodeJS.Timeout[] = [];
+
+    const result = new Promise<AgentRunResult>((resolve) => {
+      child.on('close', (code, signal) => {
+        for (const timer of timers) {
+          clearTimeout(timer);
+        }
+        outStream.end();
+        errStream.end();
+        resolve({ status: classify(code, signal, stopped, input.blockingExitCodes ?? []), exitCode: code, signal });
+      });
+    });
+
+    const stop = (): void => {
+      stopped = true;
+      const pid = child.pid;
+      if (pid === undefined) {
+        return;
+      }
+      signalGroup(pid, 'SIGINT');
+      timers.push(setTimeout(() => signalGroup(pid, 'SIGTERM'), this.graceMs));
+      timers.push(setTimeout(() => signalGroup(pid, 'SIGKILL'), this.graceMs * 2));
+    };
+
+    return { pid: child.pid, result, stop };
+  }
+}
+
+function classify(
+  code: number | null,
+  _signal: NodeJS.Signals | null,
+  stopped: boolean,
+  blockingExitCodes: number[]
+): AgentRunStatus {
+  if (stopped) {
+    return 'stopped';
+  }
+  if (code === 0) {
+    return 'succeeded';
+  }
+  if (code !== null && blockingExitCodes.includes(code)) {
+    return 'blocked';
+  }
+  return 'failed';
+}
+
+function signalGroup(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, signal); // negative pid => whole process group
+  } catch {
+    // group already gone
+  }
+}
+
+function streamLines(
+  stream: NodeJS.ReadableStream | null,
+  sink: NodeJS.WritableStream,
+  onLine?: (line: string) => void
+): void {
+  if (!stream) {
+    return;
+  }
+  let buffer = '';
+  stream.on('data', (chunk: Buffer) => {
+    sink.write(chunk);
+    if (!onLine) {
+      return;
+    }
+    buffer += chunk.toString();
+    let index = buffer.indexOf('\n');
+    while (index >= 0) {
+      onLine(buffer.slice(0, index));
+      buffer = buffer.slice(index + 1);
+      index = buffer.indexOf('\n');
+    }
+  });
+}
