@@ -79,6 +79,7 @@ export const BeaverConfigSchema = z
     workspaceRoot: z.string().min(1).default('~/.beaver/workspaces'),
     defaultRepoPath: z.string().default(''),
     gitBinary: z.string().min(1).default('git'),
+    maxConcurrentRuns: z.number().int().positive().default(2),
     defaultAgentProfile: z.string().min(1).default('generic'),
     agentProfiles: z.record(AgentProfileSchema).default({}),
     verifier: VerifierConfigSchema.optional(),

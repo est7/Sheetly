@@ -13,6 +13,7 @@
   },
   "include": [
     "packages/daemon/src/repository/**/*.ts",
+    "packages/daemon/src/orchestrator/**/*.ts",
     "packages/daemon/tests/**/*.ts"
   ]
 }

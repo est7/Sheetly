@@ -3,6 +3,7 @@ import {
   BeaverError,
   assertRunTransition,
   assertSafePathSegment,
+  isActiveRunStatus,
   type Artifact,
   type Attempt,
   type AttemptPhase,
@@ -36,6 +37,10 @@ export type RegisterArtifactInput = {
   kind: string;
   path: string;
 };
+
+export type RunPatch = Partial<
+  Pick<Run, 'baseCommit' | 'currentPid' | 'heartbeatAt' | 'prUrl' | 'blockReason' | 'blockMessage' | 'startedAt' | 'finishedAt'>
+>;
 
 /**
  * The sole SSOT for tasks/runs/attempts/events/artifacts (D6). It talks ONLY to
@@ -112,6 +117,39 @@ export class RunRepository {
     assertRunTransition(current.status, to);
     this.db.query('UPDATE runs SET status = ?, updated_at = ? WHERE id = ?').run(to, isoNow(), id);
     return this.getRun(id)!;
+  }
+
+  /** Update non-status run fields (status changes must go through updateRunStatus). */
+  patchRun(id: string, fields: RunPatch): Run {
+    if (!this.getRun(id)) {
+      throw new BeaverError('NOT_FOUND', { resource: 'run', id });
+    }
+    const columns: Array<[keyof RunPatch, string]> = [
+      ['baseCommit', 'base_commit'],
+      ['currentPid', 'current_pid'],
+      ['heartbeatAt', 'heartbeat_at'],
+      ['prUrl', 'pr_url'],
+      ['blockReason', 'block_reason'],
+      ['blockMessage', 'block_message'],
+      ['startedAt', 'started_at'],
+      ['finishedAt', 'finished_at']
+    ];
+    const sets: string[] = [];
+    const values: Array<string | number | null> = [];
+    for (const [key, column] of columns) {
+      if (Object.prototype.hasOwnProperty.call(fields, key)) {
+        sets.push(`${column} = ?`);
+        values.push(fields[key] ?? null);
+      }
+    }
+    sets.push('updated_at = ?');
+    values.push(isoNow(), id);
+    this.db.query(`UPDATE runs SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+    return this.getRun(id)!;
+  }
+
+  listActiveRuns(): Run[] {
+    return this.listRuns().filter((run) => isActiveRunStatus(run.status));
   }
 
   // ---- attempts (D7 append-only) ----

@@ -181,3 +181,17 @@ export const RUN_STATUSES: readonly RunStatus[] = [
 export function isBlockReason(status: RunStatus): status is BlockReason {
   return (BLOCK_REASONS as readonly string[]).includes(status);
 }
+
+/** Statuses where a run is "in flight" — used for the active-run-per-task and concurrency guards. */
+export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = [
+  'discovered',
+  'claimed',
+  'preparing_workspace',
+  'implementing',
+  'verifying',
+  'pr_ready'
+];
+
+export function isActiveRunStatus(status: RunStatus): boolean {
+  return (ACTIVE_RUN_STATUSES as readonly string[]).includes(status);
+}
