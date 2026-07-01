@@ -1,15 +1,14 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "baseUrl": ".",
     "types": ["node", "vitest/globals"],
     "paths": {
-      "@beaver/core": ["packages/core/src/index.ts"],
-      "@beaver/core/*": ["packages/core/src/*"],
-      "@beaver/daemon": ["packages/daemon/src/index.ts"],
-      "@beaver/daemon/*": ["packages/daemon/src/*"],
-      "@beaver/client": ["packages/client/src/index.ts"],
-      "@beaver/client/*": ["packages/client/src/*"]
+      "@beaver/core": ["./packages/core/src/index.ts"],
+      "@beaver/core/*": ["./packages/core/src/*"],
+      "@beaver/daemon": ["./packages/daemon/src/index.ts"],
+      "@beaver/daemon/*": ["./packages/daemon/src/*"],
+      "@beaver/client": ["./packages/client/src/index.ts"],
+      "@beaver/client/*": ["./packages/client/src/*"]
     }
   },
   "include": [
