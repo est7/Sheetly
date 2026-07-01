@@ -163,4 +163,29 @@ describe('daemon hardening', () => {
     expect(body).toContain('event: ready');
     expect(body).not.toContain('event: run'); // no cross-run leakage
   });
+
+  test('SSE with a malformed since still delivers live events (not ready-only)', async () => {
+    const tasksFile = path.join(home, 'tasks', 'local-tasks.json');
+    await fs.mkdir(path.dirname(tasksFile), { recursive: true });
+    await fs.writeFile(tasksFile, JSON.stringify([{ id: 'task-1', title: 'T', acceptanceCriteria: [] }]));
+    await startWith({
+      defaultRepoPath: repoPath,
+      defaultAgentProfile: 'generic',
+      agentProfiles: { generic: { command: 'bash', args: ['-lc', 'true'] } },
+      taskSource: { type: 'localJson', path: tasksFile }
+    });
+    await client.syncTasks();
+
+    const frames: string[] = [];
+    const req = http.request(
+      { socketPath: paths.socketPath, path: '/events?since=bogus', method: 'GET' },
+      (res) => res.on('data', (c) => frames.push(c.toString()))
+    );
+    req.end();
+    await delay(120);
+    await client.startRun('task-1');
+    await delay(700);
+    req.destroy();
+    expect(frames.join('')).toContain('event: run'); // live delivery not stalled by NaN cursor
+  });
 });

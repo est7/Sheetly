@@ -267,12 +267,13 @@ export class BeaverDaemonServer {
       Connection: 'keep-alive'
     });
     response.write('event: ready\ndata: {"ok":true}\n\n');
-    const since = Number(url.searchParams.get('since') ?? '0');
+    const rawSince = Number(url.searchParams.get('since') ?? '0');
+    const since = Number.isFinite(rawSince) ? rawSince : 0; // a malformed cursor tails from the start
     const runId = url.searchParams.get('runId') ?? undefined;
 
     // Synchronous: replay the backlog, then subscribe live above the last
     // replayed seq — no await between, so no event can slip through or double.
-    const backlog = this.repo.readEventsSince(Number.isFinite(since) ? since : 0, runId);
+    const backlog = this.repo.readEventsSince(since, runId);
     let lastSeq = since;
     for (const event of backlog) {
       response.write(`event: run\nid: ${event.seq ?? ''}\ndata: ${JSON.stringify(event)}\n\n`);
