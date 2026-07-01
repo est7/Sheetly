@@ -47,6 +47,30 @@ export class RunOrchestrator {
 
   constructor(private readonly deps: OrchestratorDeps) {}
 
+  /**
+   * Crash recovery (B8): a daemon restart orphans any run left in an active
+   * state — the agent process died with the old daemon, or is an unmanaged
+   * orphan we can no longer re-attach to. Move each to `aborted` (the universal
+   * terminal, legal from every active state) and record why in the event log;
+   * the run can be retried (a fresh run) from there. No process signalling: a
+   * recycled pid makes killing by the stored pid unsafe. Returns the runs it
+   * reconciled. Call once at startup, before the socket accepts clients.
+   */
+  async recoverInterruptedRuns(): Promise<Run[]> {
+    const recovered: Run[] = [];
+    for (const run of this.deps.repo.listActiveRuns()) {
+      const message = `interrupted by daemon restart${run.currentPid ? ` (was pid ${run.currentPid})` : ''}`;
+      this.deps.repo.updateRunStatus(run.id, 'aborted');
+      this.deps.repo.patchRun(run.id, { currentPid: undefined, finishedAt: new Date().toISOString() });
+      await this.deps.eventLog.append(run.id, 'run.status_changed', { from: run.status, to: 'aborted', message });
+      const reconciled = this.deps.repo.getRun(run.id);
+      if (reconciled) {
+        recovered.push(reconciled);
+      }
+    }
+    return recovered;
+  }
+
   /** Stop an active run: signal a running agent's process group, else abort it directly. */
   async stopRun(runId: string): Promise<Run> {
     const run = this.deps.repo.getRun(runId);

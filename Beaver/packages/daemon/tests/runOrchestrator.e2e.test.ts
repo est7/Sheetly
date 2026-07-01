@@ -209,3 +209,26 @@ describe('RunOrchestrator guards', () => {
     }
   });
 });
+
+describe('RunOrchestrator crash recovery (B8)', () => {
+  test('reconciles orphaned active runs to aborted, clears pid, records why', async () => {
+    repo.createRun(activeRun('run-live', 'task-1'));
+    repo.patchRun('run-live', { currentPid: 999999 });
+    repo.createRun({ ...activeRun('run-prep', 'task-2'), status: 'preparing_workspace' });
+    // A terminal run must be left untouched by recovery.
+    repo.createRun({ ...activeRun('run-old', 'task-3'), status: 'blocked_tests' });
+
+    const recovered = await orch.recoverInterruptedRuns();
+    expect(recovered.map((r) => r.id).sort()).toEqual(['run-live', 'run-prep']);
+
+    const live = repo.getRun('run-live')!;
+    expect(live.status).toBe('aborted');
+    expect(live.currentPid).toBeUndefined();
+    expect(live.finishedAt).toBeTruthy();
+    expect(repo.getRun('run-old')!.status).toBe('blocked_tests');
+
+    const events = repo.readEventsSince(0, 'run-live').filter((e) => e.type === 'run.status_changed');
+    expect(events.at(-1)?.payload).toMatchObject({ to: 'aborted' });
+    expect(String(events.at(-1)?.payload.message)).toContain('daemon restart');
+  });
+});

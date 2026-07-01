@@ -71,6 +71,13 @@ export class BeaverDaemonServer {
       workspaceRoot: resolveConfiguredPath(config.workspaceRoot, process.env)
     });
 
+    // Crash recovery (B8): reconcile runs orphaned by a previous daemon before
+    // the socket accepts clients, so no client ever observes a zombie active run.
+    const recovered = await this.orchestrator.recoverInterruptedRuns();
+    if (recovered.length > 0) {
+      process.stdout.write(`beaver-daemon recovered ${recovered.length} interrupted run(s) -> aborted\n`);
+    }
+
     await this.clearStaleSocket();
     await new Promise<void>((resolve, reject) => {
       const onError = (error: NodeJS.ErrnoException): void => reject(error);
